@@ -1,0 +1,29 @@
+{
+  "name": "@akashikprotocol/core",
+  "version": "0.0.1-alpha.0",
+  "description": "Core data types, primitives, and conflict resolution logic for the Akashik Protocol.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/akashikprotocol/core.git"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "multi-agent",
+    "crdt",
+    "shared-memory",
+    "akashik",
+    "llm",
+    "protocol"
+  ],
+  "author": "Sahil",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/akashikprotocol/core/issues"
+  },
+  "homepage": "https://akashikprotocol.com"
+}
