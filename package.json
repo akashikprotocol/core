@@ -1,29 +1,52 @@
 {
   "name": "@akashikprotocol/core",
-  "version": "0.0.1-alpha.0",
-  "description": "Core data types, primitives, and conflict resolution logic for the Akashik Protocol.",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+  "version": "0.1.0",
+  "description": "The reference SDK for the Akashik Protocol — shared memory and coordination for multi-agent AI systems.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
   },
+  "files": ["dist", "LICENSE", "README.md"],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "example": "tsx examples/two-agents.ts",
+    "prepublishOnly": "npm run lint && npm run typecheck && npm run test && npm run build"
+  },
+  "dependencies": {
+    "ulid": "^2.3.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "@types/node": "^22.0.0",
+    "tsup": "^8.3.0",
+    "typescript": "^5.6.0",
+    "tsx": "^4.19.0",
+    "vitest": "^2.1.0"
+  },
+  "keywords": ["agents", "ai", "multi-agent", "memory", "coordination", "protocol", "akashik"],
+  "homepage": "https://akashikprotocol.com",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/akashikprotocol/core.git"
   },
-  "keywords": [
-    "ai",
-    "agents",
-    "multi-agent",
-    "crdt",
-    "shared-memory",
-    "akashik",
-    "llm",
-    "protocol"
-  ],
-  "author": "Sahil",
-  "license": "Apache-2.0",
   "bugs": {
     "url": "https://github.com/akashikprotocol/core/issues"
-  },
-  "homepage": "https://akashikprotocol.com"
+  }
 }
