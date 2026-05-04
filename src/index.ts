@@ -5,6 +5,7 @@ export type {
   AttuneContext,
   Field,
   FieldEntry,
+  FieldEntryStatus,
   FieldOptions,
   ReadQuery,
   WriteInput,

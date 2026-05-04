@@ -1,6 +1,6 @@
 {
   "name": "@akashikprotocol/core",
-  "version": "0.1.0",
+  "version": "0.2.0-dev.0",
   "description": "The reference SDK for the Akashik Protocol — shared memory and coordination for multi-agent AI systems.",
   "license": "Apache-2.0",
   "type": "module",

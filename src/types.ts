@@ -17,15 +17,20 @@ export type WriteResult = {
   timestamp: number;
 };
 
+/** Status of a FieldEntry — v0.2. */
+export type FieldEntryStatus = "committed" | "draft" | "retracted" | "superseded";
+
 /** The canonical entry shape returned by field.read() and field.attune().
  *  Returned types are forward-declared here even though read/attune
  *  arrive in Stories 2/3 — keeps types stable for consumers. */
 export type FieldEntry = {
   id: string;
   timestamp: number;
+  epoch: number; // v0.2 — field-wide monotonic counter
+  agent?: string;
+  status: FieldEntryStatus; // v0.2 — defaults to "committed" for write()
   entry: Record<string, unknown>;
   intent: string;
-  agent?: string;
 };
 
 /** Query shape for field.read() — implemented in Story 2. */

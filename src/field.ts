@@ -20,6 +20,7 @@ export function createField(options: FieldOptions = {}): Field {
   const minIntentLength = options.minIntentLength ?? DEFAULT_MIN_INTENT_LENGTH;
   const entries: FieldEntry[] = [];
   let zeroLengthWarned = false;
+  let epochCounter = 0;
 
   // write — store an entry with mandatory intent
   async function write(input: WriteInput): Promise<WriteResult> {
@@ -64,9 +65,11 @@ export function createField(options: FieldOptions = {}): Field {
     const fieldEntry: FieldEntry = {
       id: generateId(),
       timestamp: Date.now(),
+      epoch: epochCounter++,
+      ...(input.agent !== undefined && { agent: input.agent }),
+      status: "committed",
       entry: input.entry,
       intent: input.intent,
-      ...(input.agent !== undefined && { agent: input.agent }),
     };
 
     entries.push(fieldEntry);
