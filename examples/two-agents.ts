@@ -8,7 +8,9 @@
  * Run: npx tsx examples/two-agents.ts
  */
 
-import { createField } from "@akashikprotocol/core";
+/// <reference types="node" />
+
+import { createField } from "../src/index.js";
 
 async function main() {
   const field = createField();
@@ -33,11 +35,14 @@ async function main() {
   // ─────────────────────────────────────────────────────────────────────
   // read() — declarative query.
   // Show every entry on the topic, regardless of who wrote it.
+  // v0.2: each entry now carries epoch and status.
   // ─────────────────────────────────────────────────────────────────────
   console.log("\n— read({ topic: 'competitor-pricing' }) —");
   const all = await field.read({ topic: "competitor-pricing" });
   for (const entry of all) {
-    console.log(`  [${entry.agent ?? "anonymous"}] ${entry.intent}`);
+    console.log(
+      `  [epoch:${entry.epoch}] [${entry.status}] [${entry.agent ?? "anonymous"}] ${entry.intent}`,
+    );
   }
 
   // ─────────────────────────────────────────────────────────────────────
@@ -51,7 +56,7 @@ async function main() {
     topic: "competitor-pricing",
   });
   for (const entry of relevant) {
-    console.log(`  [${entry.agent}] ${entry.intent}`);
+    console.log(`  [epoch:${entry.epoch}] [${entry.status}] [${entry.agent}] ${entry.intent}`);
   }
 
   // The writer can now reason about *why* each entry exists —
