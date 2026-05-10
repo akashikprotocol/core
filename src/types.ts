@@ -64,11 +64,28 @@ export type Session = {
   registered_at: number; // Unix ms timestamp
 };
 
-/** The public Field interface — v0.2 Story 2. */
+/** Per-component breakdown of a relevance score. */
+export type RelevanceReason = {
+  components: {
+    topic: number; // contribution from topic match (0 to 0.6)
+    role: number; // contribution from role match (0 to 0.2)
+    recency: number; // contribution from recency (0 to 0.15)
+    intent: number; // contribution from intent quality (0 to 0.05)
+  };
+  summary: string; // human-readable summary of why this score
+};
+
+/** A FieldEntry returned by attune(), with relevance metadata. */
+export type FieldEntryWithRelevance = FieldEntry & {
+  relevance_score: number; // 0.0 to 1.0
+  relevance_reason: RelevanceReason;
+};
+
+/** The public Field interface — v0.2 Story 3. */
 export type Field = {
   write(input: WriteInput): Promise<WriteResult>;
   read(query?: ReadQuery): Promise<FieldEntry[]>;
-  attune(context: AttuneContext): Promise<FieldEntry[]>;
+  attune(context: AttuneContext): Promise<FieldEntryWithRelevance[]>;
   register(input: RegisterInput): Promise<RegisterResult>;
   deregister(input: { id: string }): Promise<void>;
 };

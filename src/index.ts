@@ -6,10 +6,12 @@ export type {
   Field,
   FieldEntry,
   FieldEntryStatus,
+  FieldEntryWithRelevance,
   FieldOptions,
   ReadQuery,
   RegisterInput,
   RegisterResult,
+  RelevanceReason,
   WriteInput,
   WriteResult,
 } from "./types.js";

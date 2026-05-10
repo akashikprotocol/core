@@ -50,7 +50,8 @@ describe("field.attune() — basic surfacing", () => {
     });
     const result = await field.attune({ agent: "writer" });
     expect(result).toHaveLength(2);
-    expect(result.map((r) => r.agent)).toEqual(["researcher", "strategist"]);
+    // Sorted by relevance: strategist has higher epoch → higher recency score → comes first.
+    expect(result.map((r) => r.agent)).toEqual(["strategist", "researcher"]);
   });
 });
 
@@ -158,25 +159,27 @@ describe("field.attune() — topic filter", () => {
   });
 });
 
-describe("field.attune() — order preservation", () => {
-  it("returns entries in write order", async () => {
+describe("field.attune() — relevance ordering", () => {
+  it("returns entries sorted by relevance (recency) descending when no topic filter", async () => {
     const field = createField();
     await field.write({ entry: { n: 1 }, intent: "first write", agent: "a" });
     await field.write({ entry: { n: 2 }, intent: "second write", agent: "b" });
     await field.write({ entry: { n: 3 }, intent: "third write", agent: "a" });
     await field.write({ entry: { n: 4 }, intent: "fourth write", agent: "b" });
     const result = await field.attune({ agent: "writer" });
-    expect(result.map((r) => r.entry.n)).toEqual([1, 2, 3, 4]);
+    // Sorted by recency desc: epoch 3 > 2 > 1 > 0 → n=4,3,2,1
+    expect(result.map((r) => r.entry.n)).toEqual([4, 3, 2, 1]);
   });
 
-  it("preserves order after agent filtering", async () => {
+  it("returns entries sorted by relevance after agent filtering", async () => {
     const field = createField();
     await field.write({ entry: { n: 1 }, intent: "first write", agent: "writer" });
     await field.write({ entry: { n: 2 }, intent: "second write", agent: "researcher" });
     await field.write({ entry: { n: 3 }, intent: "third write", agent: "writer" });
     await field.write({ entry: { n: 4 }, intent: "fourth write", agent: "researcher" });
     const result = await field.attune({ agent: "writer" });
-    expect(result.map((r) => r.entry.n)).toEqual([2, 4]);
+    // Visible: researcher entries (n=2 epoch 1, n=4 epoch 3). n=4 is newer → comes first.
+    expect(result.map((r) => r.entry.n)).toEqual([4, 2]);
   });
 });
 
@@ -265,5 +268,93 @@ describe("field.attune() — return shape", () => {
     result1.length = 0;
     const result2 = await field.attune({ agent: "writer" });
     expect(result2).toHaveLength(1);
+  });
+});
+
+describe("field.attune() — Story 3 relevance scoring", () => {
+  it("returns entries sorted by relevance descending", async () => {
+    const field = createField();
+    await field.write({
+      entry: { topic: "different" },
+      intent: "low relevance entry",
+      agent: "w",
+    });
+    await field.write({
+      entry: { topic: "pricing" },
+      intent: "high relevance entry",
+      agent: "w",
+    });
+    const result = await field.attune({ agent: "caller", topic: "pricing" });
+    expect(result[0]?.entry.topic).toBe("pricing");
+  });
+
+  it("includes relevance_score in [0, 1]", async () => {
+    const field = createField();
+    await field.write({ entry: { topic: "x" }, intent: "test entry", agent: "w" });
+    const result = await field.attune({ agent: "caller", topic: "x" });
+    expect(result[0]?.relevance_score).toBeGreaterThanOrEqual(0);
+    expect(result[0]?.relevance_score).toBeLessThanOrEqual(1);
+  });
+
+  it("includes relevance_reason with components and summary", async () => {
+    const field = createField();
+    await field.write({ entry: { topic: "x" }, intent: "test entry", agent: "w" });
+    const result = await field.attune({ agent: "caller", topic: "x" });
+    const entry = result[0];
+    expect(entry?.relevance_reason).toBeDefined();
+    expect(entry?.relevance_reason.components).toBeDefined();
+    expect(entry?.relevance_reason.components.topic).toBeGreaterThanOrEqual(0);
+    expect(typeof entry?.relevance_reason.summary).toBe("string");
+  });
+
+  it("ties on score break by epoch descending (newer wins)", async () => {
+    const field = createField();
+    await field.write({
+      entry: { topic: "pricing" },
+      intent: "first entry written",
+      agent: "w1",
+    });
+    await field.write({
+      entry: { topic: "pricing" },
+      intent: "second entry written",
+      agent: "w2",
+    });
+    const result = await field.attune({ agent: "caller", topic: "pricing" });
+    expect(result[0]?.epoch).toBeGreaterThan(result[1]?.epoch ?? -1);
+  });
+
+  it("uses session-registered roles for role match scoring", async () => {
+    const field = createField();
+    await field.register({ id: "writer-1", role: "researcher" });
+    await field.register({ id: "caller-1", role: "researcher" });
+    await field.write({ entry: { topic: "x" }, intent: "writer entry", agent: "writer-1" });
+    const result = await field.attune({ agent: "caller-1", topic: "x" });
+    expect(result[0]?.relevance_reason.components.role).toBe(0.2);
+  });
+
+  it("contributes 0 to role component when roles differ", async () => {
+    const field = createField();
+    await field.register({ id: "writer-1", role: "researcher" });
+    await field.register({ id: "caller-1", role: "writer" });
+    await field.write({ entry: { topic: "x" }, intent: "writer entry", agent: "writer-1" });
+    const result = await field.attune({ agent: "caller-1", topic: "x" });
+    expect(result[0]?.relevance_reason.components.role).toBe(0);
+  });
+
+  it("all FieldEntry fields are preserved on returned entries", async () => {
+    const field = createField();
+    await field.write({
+      entry: { topic: "x", value: 42 },
+      intent: "preserving all fields",
+      agent: "w",
+    });
+    const result = await field.attune({ agent: "caller" });
+    const e = result[0];
+    expect(typeof e?.id).toBe("string");
+    expect(typeof e?.timestamp).toBe("number");
+    expect(typeof e?.epoch).toBe("number");
+    expect(e?.status).toBe("committed");
+    expect(e?.entry.value).toBe(42);
+    expect(e?.intent).toBe("preserving all fields");
   });
 });

@@ -26,10 +26,13 @@ function printEntry(entry: {
   agent?: string;
   intent: string;
   entry: Record<string, unknown>;
+  relevance_score?: number;
 }) {
   const agent = entry.agent ?? "anonymous";
   const payload = JSON.stringify(entry.entry);
-  console.log(`  [epoch:${entry.epoch}] [${agent}] ${entry.intent}`);
+  const scoreTag =
+    entry.relevance_score !== undefined ? ` [score:${entry.relevance_score.toFixed(2)}]` : "";
+  console.log(`  [epoch:${entry.epoch}]${scoreTag} [${agent}] ${entry.intent}`);
   console.log(`    ${payload}`);
 }
 
@@ -43,6 +46,12 @@ function section(title: string) {
 
 async function main() {
   const field = createField();
+
+  // Register each agent at session start.
+  // Registration declares role and capabilities; the field returns its own.
+  await field.register({ id: "planner", role: "planner" });
+  await field.register({ id: "implementer", role: "implementer" });
+  await field.register({ id: "reviewer", role: "reviewer" });
 
   // ── Phase 1: Planner breaks down the feature ────────────────────────────────
 
@@ -201,6 +210,11 @@ async function main() {
   for (const e of all) printEntry(e);
 
   console.log(`\n  Total entries: ${all.length}`);
+
+  // Deregister all agents at the end of the session.
+  await field.deregister({ id: "planner" });
+  await field.deregister({ id: "implementer" });
+  await field.deregister({ id: "reviewer" });
 }
 
 main().catch((err) => {

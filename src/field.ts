@@ -1,10 +1,12 @@
 import { protocolVersion, unwrap, wrap } from "./envelope.js";
 import { AkashikError } from "./errors.js";
 import { generateId } from "./id.js";
+import { computeRelevance } from "./relevance.js";
 import type {
   AttuneContext,
   Field,
   FieldEntry,
+  FieldEntryWithRelevance,
   FieldOptions,
   ReadQuery,
   RegisterInput,
@@ -115,7 +117,7 @@ export function createField(options: FieldOptions = {}): Field {
   }
 
   // attune — surface relevant entries from other agents' perspectives
-  async function attune(context: AttuneContext): Promise<FieldEntry[]> {
+  async function attune(context: AttuneContext): Promise<FieldEntryWithRelevance[]> {
     // 1. Validate agent presence.
     if (
       context === undefined ||
@@ -132,11 +134,11 @@ export function createField(options: FieldOptions = {}): Field {
     // 2. Filter: exclude entries authored by the calling agent.
     //    Entries with no `agent` field are NOT excluded — they
     //    are treated as "not authored by the calling agent" per API.md.
-    let result = entries.filter((fieldEntry) => fieldEntry.agent !== agent);
+    let visible = entries.filter((fieldEntry) => fieldEntry.agent !== agent);
 
     // 3. Apply topic filter if supplied.
     if (topic !== undefined) {
-      result = result.filter((fieldEntry) => fieldEntry.entry.topic === topic);
+      visible = visible.filter((fieldEntry) => fieldEntry.entry.topic === topic);
     }
 
     // 4. Construct the envelope around this operation (defensive validate).
@@ -150,8 +152,26 @@ export function createField(options: FieldOptions = {}): Field {
     });
     unwrap(message);
 
-    // 5. Return in write order (already preserved by the entries array).
-    return result;
+    // 5. Score every visible entry and sort by relevance descending, epoch descending.
+    const callerSession = sessions.get(agent) ?? null;
+    const scored: FieldEntryWithRelevance[] = visible.map((entry) => {
+      const writerSession = entry.agent ? (sessions.get(entry.agent) ?? null) : null;
+      const { score, reason } = computeRelevance(entry, context, {
+        visibleEntries: visible,
+        writerSession,
+        callerSession,
+      });
+      return { ...entry, relevance_score: score, relevance_reason: reason };
+    });
+
+    scored.sort((a, b) => {
+      if (b.relevance_score !== a.relevance_score) {
+        return b.relevance_score - a.relevance_score;
+      }
+      return b.epoch - a.epoch;
+    });
+
+    return scored;
   }
 
   async function register(input: RegisterInput): Promise<RegisterResult> {

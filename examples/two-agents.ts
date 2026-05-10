@@ -15,6 +15,13 @@ import { createField } from "../src/index.js";
 async function main() {
   const field = createField();
 
+  // Register each agent before they participate.
+  // Registration is optional — v0.1 code that skips it still works —
+  // but agents that register exchange capabilities and get a session id.
+  await field.register({ id: "researcher", role: "researcher" });
+  await field.register({ id: "fact-checker", role: "fact-checker" });
+  await field.register({ id: "writer", role: "writer" });
+
   // A research agent logs a finding, with intent.
   await field.write({
     entry: { topic: "competitor-pricing", source: "crunchbase", value: "$49/mo" },
@@ -56,12 +63,19 @@ async function main() {
     topic: "competitor-pricing",
   });
   for (const entry of relevant) {
-    console.log(`  [epoch:${entry.epoch}] [${entry.status}] [${entry.agent}] ${entry.intent}`);
+    console.log(
+      `  [score:${entry.relevance_score.toFixed(2)}] [epoch:${entry.epoch}] [${entry.status}] [${entry.agent}] ${entry.intent}`,
+    );
   }
 
   // The writer can now reason about *why* each entry exists —
   // not just what's there, but the intent behind it —
   // before writing a single word.
+
+  // Agents deregister when their session ends.
+  await field.deregister({ id: "researcher" });
+  await field.deregister({ id: "fact-checker" });
+  await field.deregister({ id: "writer" });
 }
 
 main().catch((err) => {
