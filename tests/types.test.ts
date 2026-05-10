@@ -6,6 +6,7 @@ import type {
   AttuneContext,
   Field,
   FieldEntry,
+  FieldEntryStatus,
   FieldOptions,
   ReadQuery,
   WriteInput,
@@ -24,9 +25,12 @@ describe("type exports", () => {
     const _writeResult: WriteResult = { id: "x", timestamp: 0 };
     const _readQuery: ReadQuery = { topic: "x" };
     const _attuneContext: AttuneContext = { agent: "a", topic: "x" };
+    const _fieldEntryStatus: FieldEntryStatus = "committed";
     const _fieldEntry: FieldEntry = {
       id: "x",
       timestamp: 0,
+      epoch: 0,
+      status: "committed",
       entry: {},
       intent: "0123456789",
     };
@@ -39,6 +43,7 @@ describe("type exports", () => {
     expect(_writeResult).toBeDefined();
     expect(_readQuery).toBeDefined();
     expect(_attuneContext).toBeDefined();
+    expect(_fieldEntryStatus).toBeDefined();
     expect(_fieldEntry).toBeDefined();
     expect(_errorCode).toBeDefined();
     expect(_field).toBeDefined();

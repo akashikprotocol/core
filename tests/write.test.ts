@@ -257,3 +257,80 @@ describe("AkashikError", () => {
     }
   });
 });
+
+describe("v0.2 foundation — entry shape", () => {
+  it("every entry has an epoch field starting at 0", async () => {
+    const field = createField();
+    await field.write({
+      entry: { topic: "first" },
+      intent: "writing the first entry",
+    });
+    const all = await field.read();
+    expect(all[0]?.epoch).toBe(0);
+  });
+
+  it("epoch increments monotonically across writes", async () => {
+    const field = createField();
+    for (let i = 0; i < 5; i++) {
+      await field.write({
+        entry: { i },
+        intent: `writing entry number ${i + 1}`,
+      });
+    }
+    const all = await field.read();
+    expect(all.map((e) => e.epoch)).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it("every direct write produces status committed", async () => {
+    const field = createField();
+    await field.write({
+      entry: { topic: "x" },
+      intent: "writing a regular entry",
+    });
+    const all = await field.read();
+    expect(all[0]?.status).toBe("committed");
+  });
+
+  it("epoch counter is independent per field", async () => {
+    const fieldA = createField();
+    const fieldB = createField();
+    await fieldA.write({
+      entry: { which: "a" },
+      intent: "writing to field a only",
+    });
+    await fieldB.write({
+      entry: { which: "b" },
+      intent: "writing to field b only",
+    });
+    await fieldA.write({
+      entry: { which: "a-second" },
+      intent: "second write to field a",
+    });
+
+    const aEntries = await fieldA.read();
+    const bEntries = await fieldB.read();
+
+    expect(aEntries.map((e) => e.epoch)).toEqual([0, 1]);
+    expect(bEntries.map((e) => e.epoch)).toEqual([0]);
+  });
+
+  it("FieldEntry shape includes all v0.2 foundation fields", async () => {
+    const field = createField();
+    await field.write({
+      entry: { topic: "x" },
+      intent: "checking shape includes new fields",
+      agent: "tester",
+    });
+    const all = await field.read();
+    const entry = all[0];
+
+    expect(entry).toBeDefined();
+    expect(typeof entry?.id).toBe("string");
+    expect(typeof entry?.timestamp).toBe("number");
+    expect(typeof entry?.epoch).toBe("number");
+    expect(entry?.status).toBe("committed");
+    expect(entry?.agent).toBe("tester");
+    expect(entry?.entry).toEqual({ topic: "x" });
+    expect(typeof entry?.intent).toBe("string");
+  });
+});

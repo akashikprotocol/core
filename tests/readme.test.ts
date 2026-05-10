@@ -25,10 +25,12 @@ describe("README Quick Start", () => {
     // The README says: "Both entries, surfaced with their intents, so the writer
     // can reason about *why* the field looks the way it does."
     expect(relevant).toHaveLength(2);
+    // Sorted by relevance: both match topic (0.6); tiebreaker is epoch descending.
+    // fact-checker was written second (higher epoch) → comes first.
     expect(relevant.map((e) => e.intent)).toEqual([
-      "gathering market signal for pricing recommendation",
       "flagging data quality before the writer uses it",
+      "gathering market signal for pricing recommendation",
     ]);
-    expect(relevant.map((e) => e.agent)).toEqual(["researcher", "fact-checker"]);
+    expect(relevant.map((e) => e.agent)).toEqual(["fact-checker", "researcher"]);
   });
 });
