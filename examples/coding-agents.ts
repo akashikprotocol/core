@@ -155,8 +155,9 @@ async function main() {
   console.log("\n  reviewer.attune() — full field minus reviewer's own entries:");
   for (const e of reviewerView) printEntry(e);
 
-  // Reviewer raises a concern about the workaround.
-  await field.write({
+  // Reviewer drafts a concern first — not visible to the team until committed.
+  // This mirrors a real review workflow: draft → verify wording → commit.
+  const { draft_id: draftConcernId } = await field.draft({
     entry: {
       topic: "review-concern",
       severity: "medium",
@@ -164,9 +165,19 @@ async function main() {
       concern: "casting Redis TTL arg to `any` will silently break on library upgrade",
       suggested_fix: "patch @types/ioredis or use a typed wrapper — do not merge with cast",
     },
-    intent: "blocking merge until the Redis typing workaround is resolved properly",
+    intent: "drafting review concern before finalising wording",
     agent: "reviewer",
   });
+
+  // Reviewer verifies: their draft is visible only to themselves.
+  const selfView = await field.read(undefined, { caller: "reviewer" });
+  console.log(
+    `\n  reviewer draft visible to self: ${selfView.filter((e) => e.status === "draft").length === 1 ? "yes ✓" : "no — unexpected"}`,
+  );
+
+  // Draft looks good — commit it to the shared field.
+  await field.commit({ draft_id: draftConcernId });
+  console.log("  reviewer committed concern to field\n");
 
   await field.write({
     entry: {

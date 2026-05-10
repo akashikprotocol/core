@@ -358,3 +358,138 @@ describe("field.attune() — Story 3 relevance scoring", () => {
     expect(e?.intent).toBe("preserving all fields");
   });
 });
+
+describe("attune — Story 4 max_units truncation", () => {
+  it("returns all entries when count is below default cap", async () => {
+    const field = createField();
+    for (let i = 0; i < 5; i++) {
+      await field.write({
+        entry: { topic: "x", n: i },
+        intent: `entry number ${i} written for max_units test`,
+        agent: `writer-${i}`,
+      });
+    }
+    const result = await field.attune({ agent: "caller", topic: "x" });
+    expect(result).toHaveLength(5);
+  });
+
+  it("caps results to max_units when more entries match", async () => {
+    const field = createField();
+    for (let i = 0; i < 10; i++) {
+      await field.write({
+        entry: { topic: "x", n: i },
+        intent: `entry number ${i} written for max_units test`,
+        agent: `writer-${i}`,
+      });
+    }
+    const result = await field.attune({ agent: "caller", topic: "x", max_units: 3 });
+    expect(result).toHaveLength(3);
+  });
+
+  it("default max_units is 100", async () => {
+    const field = createField();
+    for (let i = 0; i < 105; i++) {
+      await field.write({
+        entry: { topic: "x", n: i },
+        intent: `entry number ${i} written for default cap test`,
+        agent: `writer-${i}`,
+      });
+    }
+    const result = await field.attune({ agent: "caller", topic: "x" });
+    expect(result).toHaveLength(100);
+  });
+
+  it("max_units of 0 returns empty array", async () => {
+    const field = createField();
+    await field.write({ entry: { topic: "x" }, intent: "test entry for zero cap", agent: "w" });
+    const result = await field.attune({ agent: "caller", topic: "x", max_units: 0 });
+    expect(result).toEqual([]);
+  });
+
+  it("rejects negative max_units", async () => {
+    const field = createField();
+    await expect(field.attune({ agent: "caller", max_units: -1 })).rejects.toMatchObject({
+      code: "INVALID_QUERY",
+    });
+  });
+
+  it("truncates lowest-relevance entries first", async () => {
+    const field = createField();
+    await field.write({
+      entry: { topic: "match" },
+      intent: "high relevance because topic matches exactly",
+      agent: "w1",
+    });
+    await field.write({
+      entry: { topic: "different-1" },
+      intent: "low relevance entry one",
+      agent: "w2",
+    });
+    await field.write({
+      entry: { topic: "different-2" },
+      intent: "low relevance entry two",
+      agent: "w3",
+    });
+    const result = await field.attune({ agent: "caller", topic: "match", max_units: 1 });
+    expect(result).toHaveLength(1);
+    expect(result[0]?.entry.topic).toBe("match");
+  });
+});
+
+describe("attune — Story 4 role parameter", () => {
+  it("uses context.role when provided, ignoring missing session", async () => {
+    const field = createField();
+    await field.register({ id: "writer-1", role: "researcher" });
+    await field.write({
+      entry: { topic: "x" },
+      intent: "writer entry for role test",
+      agent: "writer-1",
+    });
+
+    // Caller does NOT register but passes role explicitly.
+    const result = await field.attune({ agent: "caller-1", topic: "x", role: "researcher" });
+    expect(result[0]?.relevance_reason.components.role).toBe(0.2);
+  });
+
+  it("falls back to session role when context.role is omitted", async () => {
+    const field = createField();
+    await field.register({ id: "writer-1", role: "researcher" });
+    await field.register({ id: "caller-1", role: "researcher" });
+    await field.write({
+      entry: { topic: "x" },
+      intent: "writer entry for role fallback test",
+      agent: "writer-1",
+    });
+
+    const result = await field.attune({ agent: "caller-1", topic: "x" });
+    expect(result[0]?.relevance_reason.components.role).toBe(0.2);
+  });
+
+  it("context.role overrides session role", async () => {
+    const field = createField();
+    await field.register({ id: "writer-1", role: "researcher" });
+    await field.register({ id: "caller-1", role: "writer" }); // session says "writer"
+    await field.write({
+      entry: { topic: "x" },
+      intent: "writer entry for override test",
+      agent: "writer-1",
+    });
+
+    // Explicit role matches writer's role — should score 0.2 despite session mismatch.
+    const result = await field.attune({ agent: "caller-1", topic: "x", role: "researcher" });
+    expect(result[0]?.relevance_reason.components.role).toBe(0.2);
+  });
+
+  it("contributes 0 when context.role does not match writer role", async () => {
+    const field = createField();
+    await field.register({ id: "writer-1", role: "researcher" });
+    await field.write({
+      entry: { topic: "x" },
+      intent: "writer entry for mismatch test",
+      agent: "writer-1",
+    });
+
+    const result = await field.attune({ agent: "caller-1", topic: "x", role: "writer" });
+    expect(result[0]?.relevance_reason.components.role).toBe(0);
+  });
+});

@@ -4,10 +4,15 @@ import { generateId } from "./id.js";
 import { computeRelevance } from "./relevance.js";
 import type {
   AttuneContext,
+  CommitInput,
+  CommitResult,
+  DiscardInput,
+  DraftInput,
   Field,
   FieldEntry,
   FieldEntryWithRelevance,
   FieldOptions,
+  ReadOptions,
   ReadQuery,
   RegisterInput,
   RegisterResult,
@@ -30,6 +35,9 @@ export function createField(options: FieldOptions = {}): Field {
 
   // Story 2: session tracking
   const sessions = new Map<string, Session>();
+
+  // Story 5: draft storage (keyed by draft id)
+  const drafts = new Map<string, FieldEntry>();
 
   // write — store an entry with mandatory intent
   async function write(input: WriteInput): Promise<WriteResult> {
@@ -99,7 +107,7 @@ export function createField(options: FieldOptions = {}): Field {
   }
 
   // read — retrieve entries, optionally filtered by query
-  async function read(query?: ReadQuery): Promise<FieldEntry[]> {
+  async function read(query?: ReadQuery, readOptions?: ReadOptions): Promise<FieldEntry[]> {
     // 1. Validate query shape.
     if (query !== undefined && !isPlainObject(query)) {
       throw new AkashikError("INVALID_QUERY", "query must be a plain object or undefined", {
@@ -107,13 +115,25 @@ export function createField(options: FieldOptions = {}): Field {
       });
     }
 
-    // 2. No query (or empty query) → return all entries in write order.
+    // 2. Build candidate set: committed entries + caller's own drafts.
+    const caller = readOptions?.caller;
+    const visibleDrafts: FieldEntry[] = [];
+    if (caller !== undefined) {
+      for (const draft of drafts.values()) {
+        if (draft.agent === caller) {
+          visibleDrafts.push(draft);
+        }
+      }
+    }
+    const candidate = [...entries, ...visibleDrafts];
+
+    // 3. No query (or empty query) → return all candidates in write order.
     if (query === undefined || Object.keys(query).length === 0) {
-      return [...entries];
+      return candidate;
     }
 
-    // 3. Filter: every key in query must match the same key in entry.entry.
-    return entries.filter((fieldEntry) => matchesQuery(fieldEntry.entry, query));
+    // 4. Filter: every key in query must match the same key in entry.entry.
+    return candidate.filter((fieldEntry) => matchesQuery(fieldEntry.entry, query));
   }
 
   // attune — surface relevant entries from other agents' perspectives
@@ -141,18 +161,36 @@ export function createField(options: FieldOptions = {}): Field {
       visible = visible.filter((fieldEntry) => fieldEntry.entry.topic === topic);
     }
 
+    // Story 5: include calling agent's own drafts.
+    for (const draft of drafts.values()) {
+      if (draft.agent === agent) {
+        if (topic === undefined || draft.entry.topic === topic) {
+          visible.push(draft);
+        }
+      }
+    }
+
     // 4. Construct the envelope around this operation (defensive validate).
     const message = wrap({
       type: "ATTUNE",
       sender: agent,
       epoch: epochCounter,
       payload: {
+        agent,
+        ...(context.role !== undefined && { role: context.role }),
         ...(topic !== undefined && { topic }),
+        ...(context.max_units !== undefined && { max_units: context.max_units }),
       },
     });
     unwrap(message);
 
-    // 5. Score every visible entry and sort by relevance descending, epoch descending.
+    // 5. Validate max_units before scoring.
+    const limit = context.max_units ?? 100;
+    if (limit < 0) {
+      throw new AkashikError("INVALID_QUERY", "max_units must be non-negative");
+    }
+
+    // 6. Score every visible entry and sort by relevance descending, epoch descending.
     const callerSession = sessions.get(agent) ?? null;
     const scored: FieldEntryWithRelevance[] = visible.map((entry) => {
       const writerSession = entry.agent ? (sessions.get(entry.agent) ?? null) : null;
@@ -171,7 +209,8 @@ export function createField(options: FieldOptions = {}): Field {
       return b.epoch - a.epoch;
     });
 
-    return scored;
+    // 7. Apply max_units cap (drop lowest-relevance entries first).
+    return scored.slice(0, limit);
   }
 
   async function register(input: RegisterInput): Promise<RegisterResult> {
@@ -253,7 +292,146 @@ export function createField(options: FieldOptions = {}): Field {
     // 4. Drafts owned by this agent persist beyond DEREGISTER (Story 5 concern).
   }
 
-  return { write, read, attune, register, deregister };
+  async function draft(input: DraftInput): Promise<{ draft_id: string }> {
+    // 1. Validate (same rules as write).
+    if (!isPlainObject(input?.entry)) {
+      throw new AkashikError("INVALID_ENTRY", "entry must be a plain object", {
+        received: typeof input?.entry,
+      });
+    }
+    if (input.intent === undefined || input.intent === null) {
+      throw new AkashikError("INTENT_REQUIRED", "intent is required on every draft");
+    }
+    if (typeof input.intent !== "string") {
+      throw new AkashikError("INTENT_REQUIRED", "intent must be a string");
+    }
+    const trimmedIntent = input.intent.trim();
+    if (trimmedIntent.length === 0) {
+      throw new AkashikError("INTENT_REQUIRED", "intent must not be empty");
+    }
+    if (minIntentLength > 0 && trimmedIntent.length < minIntentLength) {
+      throw new AkashikError(
+        "INTENT_TOO_SHORT",
+        `intent must be at least ${minIntentLength} characters (after trimming)`,
+        { minIntentLength, actualLength: trimmedIntent.length },
+      );
+    }
+
+    // 2. Generate the entry with status "draft".
+    const epoch = epochCounter++;
+    const newEntry: FieldEntry = {
+      id: generateId(),
+      timestamp: Date.now(),
+      epoch,
+      ...(input.agent !== undefined && { agent: input.agent }),
+      status: "draft",
+      entry: input.entry,
+      intent: input.intent,
+    };
+
+    // 3. Envelope wrap.
+    const message = wrap({
+      type: "DRAFT",
+      sender: input.agent ?? "",
+      epoch,
+      payload: { entry: input.entry, intent: input.intent },
+    });
+    unwrap(message);
+
+    // 4. Store in drafts Map.
+    drafts.set(newEntry.id, newEntry);
+
+    return { draft_id: newEntry.id };
+  }
+
+  async function commit(input: CommitInput): Promise<CommitResult> {
+    // 1. Validate draft_id.
+    if (!input || typeof input.draft_id !== "string" || input.draft_id.length === 0) {
+      throw new AkashikError("DRAFT_NOT_FOUND", "commit() requires a non-empty draft_id");
+    }
+
+    // 2. Locate draft.
+    const draftEntry = drafts.get(input.draft_id);
+    if (!draftEntry) {
+      throw new AkashikError("DRAFT_NOT_FOUND", `no draft found with id: ${input.draft_id}`);
+    }
+
+    // 3. Promote: status → committed, epoch and timestamp updated. Id preserved.
+    const newEpoch = epochCounter++;
+    const newTimestamp = Date.now();
+    const committed: FieldEntry = {
+      ...draftEntry,
+      status: "committed",
+      epoch: newEpoch,
+      timestamp: newTimestamp,
+    };
+
+    // 4. Envelope wrap.
+    const message = wrap({
+      type: "COMMIT",
+      sender: draftEntry.agent ?? "",
+      epoch: newEpoch,
+      payload: { draft_id: input.draft_id, id: committed.id },
+    });
+    unwrap(message);
+
+    // 5. Move from drafts to entries.
+    drafts.delete(input.draft_id);
+    entries.push(committed);
+
+    return { id: committed.id, epoch: newEpoch, timestamp: newTimestamp };
+  }
+
+  async function discard(input: DiscardInput): Promise<void> {
+    // 1. Validate draft_id.
+    if (!input || typeof input.draft_id !== "string" || input.draft_id.length === 0) {
+      throw new AkashikError("DRAFT_NOT_FOUND", "discard() requires a non-empty draft_id");
+    }
+
+    // 2. Locate draft (before intent validation so DRAFT_NOT_FOUND takes precedence).
+    const draftEntry = drafts.get(input.draft_id);
+    if (!draftEntry) {
+      throw new AkashikError("DRAFT_NOT_FOUND", `no draft found with id: ${input.draft_id}`);
+    }
+
+    // 3. Validate intent (same minIntentLength rule as write).
+    if (input.intent === undefined || input.intent === null || input.intent === "") {
+      throw new AkashikError("INTENT_REQUIRED", "discard() requires a non-empty intent");
+    }
+    if (typeof input.intent !== "string") {
+      throw new AkashikError("INTENT_REQUIRED", "intent must be a string");
+    }
+    const trimmedIntent = input.intent.trim();
+    if (minIntentLength > 0 && trimmedIntent.length < minIntentLength) {
+      throw new AkashikError(
+        "INTENT_TOO_SHORT",
+        `discard() intent must be at least ${minIntentLength} characters`,
+        { minIntentLength, actualLength: trimmedIntent.length },
+      );
+    }
+
+    // 4. Mark retracted; keep audit trail.
+    const retracted: FieldEntry = {
+      ...draftEntry,
+      status: "retracted",
+      intent: input.intent,
+    };
+
+    // 5. Envelope wrap.
+    const message = wrap({
+      type: "DISCARD",
+      sender: input.agent ?? draftEntry.agent ?? "",
+      epoch: epochCounter,
+      payload: { draft_id: input.draft_id, intent: input.intent },
+    });
+    unwrap(message);
+
+    // 6. Move from drafts to entries (audit trail; filtered by status in attune).
+    drafts.delete(input.draft_id);
+    entries.push(retracted);
+  }
+
+  return { write, read, attune, register, deregister, draft, commit, discard };
 }
 
 // ── private helpers ──────────────────────────────────────────────────────────

@@ -36,10 +36,43 @@ export type FieldEntry = {
 /** Query shape for field.read() — implemented in Story 2. */
 export type ReadQuery = Record<string, unknown>;
 
-/** Context shape for field.attune() — implemented in Story 3. */
+/** Options for field.read() — Story 5: caller for draft-visibility filtering. */
+export type ReadOptions = {
+  caller?: string;
+};
+
+/** Input to field.draft(). */
+export type DraftInput = {
+  entry: Record<string, unknown>;
+  intent: string;
+  agent?: string;
+};
+
+/** Input to field.commit(). */
+export type CommitInput = {
+  draft_id: string;
+};
+
+/** Input to field.discard(). */
+export type DiscardInput = {
+  draft_id: string;
+  intent: string;
+  agent?: string;
+};
+
+/** Result of field.commit(): identity preserved, status/epoch/timestamp updated. */
+export type CommitResult = {
+  id: string;
+  epoch: number;
+  timestamp: number;
+};
+
+/** Context shape for field.attune() — v0.2 Story 4 complete. */
 export type AttuneContext = {
   agent: string;
+  role?: string; // NEW in Story 4: optional explicit role for scoring
   topic?: string;
+  max_units?: number; // NEW in Story 4: cap on returned entries; default 100
 };
 
 /** Input shape for field.register(). */
@@ -81,11 +114,14 @@ export type FieldEntryWithRelevance = FieldEntry & {
   relevance_reason: RelevanceReason;
 };
 
-/** The public Field interface — v0.2 Story 3. */
+/** The public Field interface — v0.2 Story 5. */
 export type Field = {
   write(input: WriteInput): Promise<WriteResult>;
-  read(query?: ReadQuery): Promise<FieldEntry[]>;
+  read(query?: ReadQuery, options?: ReadOptions): Promise<FieldEntry[]>;
   attune(context: AttuneContext): Promise<FieldEntryWithRelevance[]>;
   register(input: RegisterInput): Promise<RegisterResult>;
   deregister(input: { id: string }): Promise<void>;
+  draft(input: DraftInput): Promise<{ draft_id: string }>;
+  commit(input: CommitInput): Promise<CommitResult>;
+  discard(input: DiscardInput): Promise<void>;
 };

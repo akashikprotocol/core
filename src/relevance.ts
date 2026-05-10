@@ -29,13 +29,13 @@ export function computeRelevance(
     topicScore = 0.6;
   }
 
-  // Role match: requires both writer and caller to have registered with roles.
-  // If either is missing, role contribution is 0.
-  if (
-    state.writerSession !== null &&
-    state.callerSession !== null &&
-    state.writerSession.role === state.callerSession.role
-  ) {
+  // Role match: use context.role if provided (explicit override),
+  // otherwise fall back to caller's session role.
+  // If either side's role is unknown, contribution is 0.
+  const callerRole = context.role ?? state.callerSession?.role ?? null;
+  const writerRole = state.writerSession?.role ?? null;
+
+  if (callerRole !== null && writerRole !== null && callerRole === writerRole) {
     roleScore = 0.2;
   }
 
