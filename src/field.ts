@@ -1,4 +1,4 @@
-import { unwrap, wrap } from "./envelope.js";
+import { protocolVersion, unwrap, wrap } from "./envelope.js";
 import { AkashikError } from "./errors.js";
 import { generateId } from "./id.js";
 import type {
@@ -7,6 +7,9 @@ import type {
   FieldEntry,
   FieldOptions,
   ReadQuery,
+  RegisterInput,
+  RegisterResult,
+  Session,
   WriteInput,
   WriteResult,
 } from "./types.js";
@@ -22,6 +25,9 @@ export function createField(options: FieldOptions = {}): Field {
   const entries: FieldEntry[] = [];
   let zeroLengthWarned = false;
   let epochCounter = 0;
+
+  // Story 2: session tracking
+  const sessions = new Map<string, Session>();
 
   // write — store an entry with mandatory intent
   async function write(input: WriteInput): Promise<WriteResult> {
@@ -148,7 +154,86 @@ export function createField(options: FieldOptions = {}): Field {
     return result;
   }
 
-  return { write, read, attune };
+  async function register(input: RegisterInput): Promise<RegisterResult> {
+    // 1. Validate input.
+    validateRegisterInput(input);
+
+    // 2. Idempotent: same id returns the existing session if already registered.
+    const existing = sessions.get(input.id);
+    if (existing) {
+      const message = wrap({
+        type: "REGISTER",
+        sender: input.id,
+        epoch: epochCounter,
+        payload: {
+          id: input.id,
+          role: existing.role,
+          capabilities: existing.capabilities,
+        },
+      });
+      unwrap(message);
+      return {
+        field_capabilities: [],
+        field_protocol_version: protocolVersion(),
+        session_id: existing.id,
+      };
+    }
+
+    // 3. New registration. Create the session.
+    const session: Session = {
+      id: input.id,
+      role: input.role,
+      capabilities: input.capabilities ?? [],
+      registered_at: Date.now(),
+    };
+    sessions.set(input.id, session);
+
+    // 4. Wrap the operation in an envelope.
+    const message = wrap({
+      type: "REGISTER",
+      sender: input.id,
+      epoch: epochCounter,
+      payload: {
+        id: input.id,
+        role: input.role,
+        capabilities: input.capabilities ?? [],
+      },
+    });
+    unwrap(message);
+
+    // 5. Return capability exchange result.
+    return {
+      field_capabilities: [],
+      field_protocol_version: protocolVersion(),
+      session_id: session.id,
+    };
+  }
+
+  async function deregister(input: { id: string }): Promise<void> {
+    // 1. Validate input.
+    if (!input || typeof input !== "object") {
+      throw new AkashikError("AGENT_REQUIRED", "deregister() requires { id: string }");
+    }
+    if (typeof input.id !== "string" || input.id.trim().length === 0) {
+      throw new AkashikError("AGENT_REQUIRED", "deregister() requires a non-empty id");
+    }
+
+    // 2. Wrap the operation in an envelope.
+    const message = wrap({
+      type: "DEREGISTER",
+      sender: input.id,
+      epoch: epochCounter,
+      payload: { id: input.id },
+    });
+    unwrap(message);
+
+    // 3. Idempotent: deregistering an unregistered agent is a no-op.
+    sessions.delete(input.id);
+
+    // 4. Drafts owned by this agent persist beyond DEREGISTER (Story 5 concern).
+  }
+
+  return { write, read, attune, register, deregister };
 }
 
 // ── private helpers ──────────────────────────────────────────────────────────
@@ -182,4 +267,34 @@ function matchesQuery(entry: Record<string, unknown>, query: Record<string, unkn
     }
   }
   return true;
+}
+
+/** Validates a RegisterInput. Throws AkashikError on invalid input. */
+function validateRegisterInput(input: unknown): asserts input is RegisterInput {
+  if (!input || typeof input !== "object") {
+    throw new AkashikError("AGENT_REQUIRED", "register() requires { id, role, capabilities? }");
+  }
+  const i = input as Record<string, unknown>;
+
+  if (typeof i.id !== "string" || i.id.trim().length === 0) {
+    throw new AkashikError(
+      "AGENT_REQUIRED",
+      "register() requires a non-empty id (string, no whitespace-only)",
+    );
+  }
+  if (typeof i.role !== "string" || i.role.trim().length === 0) {
+    throw new AkashikError(
+      "AGENT_REQUIRED",
+      "register() requires a non-empty role (string, no whitespace-only)",
+    );
+  }
+  if (
+    i.capabilities !== undefined &&
+    (!Array.isArray(i.capabilities) || !i.capabilities.every((c) => typeof c === "string"))
+  ) {
+    throw new AkashikError(
+      "INVALID_ENTRY",
+      "register() capabilities must be an array of strings if provided",
+    );
+  }
 }

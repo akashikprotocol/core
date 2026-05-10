@@ -8,6 +8,8 @@ export type {
   FieldEntryStatus,
   FieldOptions,
   ReadQuery,
+  RegisterInput,
+  RegisterResult,
   WriteInput,
   WriteResult,
 } from "./types.js";

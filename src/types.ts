@@ -42,9 +42,33 @@ export type AttuneContext = {
   topic?: string;
 };
 
-/** The public Field interface — v0.1 complete. */
+/** Input shape for field.register(). */
+export type RegisterInput = {
+  id: string;
+  role: string;
+  capabilities?: string[];
+};
+
+/** Return shape from field.register(). */
+export type RegisterResult = {
+  field_capabilities: string[];
+  field_protocol_version: string;
+  session_id?: string;
+};
+
+/** Internal session record. NOT exported from the package. */
+export type Session = {
+  id: string;
+  role: string;
+  capabilities: string[];
+  registered_at: number; // Unix ms timestamp
+};
+
+/** The public Field interface — v0.2 Story 2. */
 export type Field = {
   write(input: WriteInput): Promise<WriteResult>;
   read(query?: ReadQuery): Promise<FieldEntry[]>;
   attune(context: AttuneContext): Promise<FieldEntry[]>;
+  register(input: RegisterInput): Promise<RegisterResult>;
+  deregister(input: { id: string }): Promise<void>;
 };
