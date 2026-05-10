@@ -3,7 +3,8 @@ export type AkashikErrorCode =
   | "INTENT_TOO_SHORT"
   | "INVALID_ENTRY"
   | "INVALID_QUERY" // implemented in Story 2
-  | "AGENT_REQUIRED"; // implemented in Story 3
+  | "AGENT_REQUIRED" // implemented in Story 3
+  | "INVALID_ENVELOPE"; // NEW in v0.2 Story 1
 
 export class AkashikError extends Error {
   readonly code: AkashikErrorCode;

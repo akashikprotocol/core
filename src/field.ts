@@ -1,3 +1,4 @@
+import { unwrap, wrap } from "./envelope.js";
 import { AkashikError } from "./errors.js";
 import { generateId } from "./id.js";
 import type {
@@ -61,7 +62,19 @@ export function createField(options: FieldOptions = {}): Field {
       );
     }
 
-    // 4. Construct the FieldEntry and store it.
+    // 4. Construct the envelope around this operation (defensive validate).
+    const message = wrap({
+      type: "RECORD",
+      sender: input.agent ?? "",
+      epoch: epochCounter,
+      payload: {
+        entry: input.entry,
+        intent: input.intent,
+      },
+    });
+    unwrap(message);
+
+    // 5. Construct the FieldEntry and store it.
     const fieldEntry: FieldEntry = {
       id: generateId(),
       timestamp: Date.now(),
@@ -120,7 +133,18 @@ export function createField(options: FieldOptions = {}): Field {
       result = result.filter((fieldEntry) => fieldEntry.entry.topic === topic);
     }
 
-    // 4. Return in write order (already preserved by the entries array).
+    // 4. Construct the envelope around this operation (defensive validate).
+    const message = wrap({
+      type: "ATTUNE",
+      sender: agent,
+      epoch: epochCounter,
+      payload: {
+        ...(topic !== undefined && { topic }),
+      },
+    });
+    unwrap(message);
+
+    // 5. Return in write order (already preserved by the entries array).
     return result;
   }
 
