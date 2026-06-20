@@ -144,37 +144,36 @@ export function createField(options: FieldOptions = {}): Field {
     return candidate.filter((fieldEntry) => matchesQuery(fieldEntry.entry, query));
   }
 
-  // attune — surface relevant entries from other agents' perspectives
-  async function attune(context: AttuneContext): Promise<FieldEntryWithRelevance[]> {
-    // 1. Validate agent presence.
-    if (
-      context === undefined ||
-      context === null ||
-      typeof context !== "object" ||
-      typeof context.agent !== "string" ||
-      context.agent.trim().length === 0
-    ) {
-      throw new AkashikError("AGENT_REQUIRED", "attune() requires a non-empty agent identifier");
-    }
-
+  // scopedView — the shared core of attune() and reckon().
+  //
+  // Both operations surface the same relevance-ranked, capped view of the
+  // field; reckon() simply runs conflict detection over the result. The only
+  // wire difference is the envelope `type`, passed in by the caller. Keeping
+  // this in one place guarantees attune and reckon never drift in visibility,
+  // scoring, ordering, or truncation. Agent validation stays in each public
+  // method so error messages name the operation the caller actually invoked.
+  function scopedView(
+    context: AttuneContext,
+    messageType: "ATTUNE" | "RECKON",
+  ): FieldEntryWithRelevance[] {
     const { agent, topic } = context;
 
-    // 2. Filter: exclude entries authored by the calling agent.
+    // 1. Filter: exclude entries authored by the calling agent.
     //    Entries with no `agent` field are NOT excluded — they
     //    are treated as "not authored by the calling agent" per API.md.
     let visible = entries.filter((fieldEntry) => fieldEntry.agent !== agent);
 
-    // 3. Apply topic filter if supplied.
+    // 2. Apply topic filter if supplied.
     if (topic !== undefined) {
       visible = visible.filter((fieldEntry) => fieldEntry.entry.topic === topic);
     }
 
-    // Story 6: filter by status — only committed entries visible to others.
-    // Retracted and superseded entries are excluded. Drafts of other agents
-    // are already absent (they live in the drafts Map, not entries).
+    // 3. Filter by status — only committed entries are visible to others.
+    //    Retracted and superseded entries are excluded. Drafts of other agents
+    //    are already absent (they live in the drafts Map, not entries).
     visible = visible.filter((fieldEntry) => fieldEntry.status === "committed");
 
-    // Story 5: include calling agent's own drafts.
+    // 4. Include the calling agent's own drafts (private scratchpad).
     for (const draft of drafts.values()) {
       if (draft.agent === agent) {
         if (topic === undefined || draft.entry.topic === topic) {
@@ -183,9 +182,9 @@ export function createField(options: FieldOptions = {}): Field {
       }
     }
 
-    // 4. Construct the envelope around this operation (defensive validate).
+    // 5. Construct the envelope around this operation (defensive validate).
     const message = wrap({
-      type: "ATTUNE",
+      type: messageType,
       sender: agent,
       epoch: epochCounter,
       payload: {
@@ -197,13 +196,13 @@ export function createField(options: FieldOptions = {}): Field {
     });
     unwrap(message);
 
-    // 5. Validate max_units before scoring.
+    // 6. Validate max_units before scoring.
     const limit = context.max_units ?? 100;
     if (limit < 0) {
       throw new AkashikError("INVALID_QUERY", "max_units must be non-negative");
     }
 
-    // 6. Score every visible entry and sort by relevance descending, epoch descending.
+    // 7. Score every visible entry and sort by relevance descending, epoch descending.
     const callerSession = sessions.get(agent) ?? null;
     const scored: FieldEntryWithRelevance[] = visible.map((entry) => {
       const writerSession = entry.agent ? (sessions.get(entry.agent) ?? null) : null;
@@ -222,8 +221,24 @@ export function createField(options: FieldOptions = {}): Field {
       return b.epoch - a.epoch;
     });
 
-    // 7. Apply max_units cap (drop lowest-relevance entries first).
+    // 8. Apply max_units cap (drop lowest-relevance entries first).
     return scored.slice(0, limit);
+  }
+
+  // attune — surface relevant entries from other agents' perspectives
+  async function attune(context: AttuneContext): Promise<FieldEntryWithRelevance[]> {
+    // Validate agent presence.
+    if (
+      context === undefined ||
+      context === null ||
+      typeof context !== "object" ||
+      typeof context.agent !== "string" ||
+      context.agent.trim().length === 0
+    ) {
+      throw new AkashikError("AGENT_REQUIRED", "attune() requires a non-empty agent identifier");
+    }
+
+    return scopedView(context, "ATTUNE");
   }
 
   async function register(input: RegisterInput): Promise<RegisterResult> {
@@ -577,7 +592,7 @@ export function createField(options: FieldOptions = {}): Field {
   }
 
   async function reckon(context: AttuneContext): Promise<ReckonResult> {
-    // 1. Validate context (same rules as attune).
+    // Validate context (same rules as attune).
     if (
       context === undefined ||
       context === null ||
@@ -588,67 +603,8 @@ export function createField(options: FieldOptions = {}): Field {
       throw new AkashikError("AGENT_REQUIRED", "reckon() requires a non-empty agent identifier");
     }
 
-    const { agent, topic } = context;
-
-    // 2. Compute visible entries — same logic as attune (duplicated deliberately).
-    let visible = entries.filter((e) => e.agent !== agent);
-    if (topic !== undefined) {
-      visible = visible.filter((e) => e.entry.topic === topic);
-    }
-    visible = visible.filter((e) => e.status === "committed");
-
-    for (const draft of drafts.values()) {
-      if (draft.agent === agent) {
-        if (topic === undefined || draft.entry.topic === topic) {
-          visible.push(draft);
-        }
-      }
-    }
-
-    // 3. Envelope wrap with type "RECKON".
-    const message = wrap({
-      type: "RECKON",
-      sender: agent,
-      epoch: epochCounter,
-      payload: {
-        agent,
-        ...(context.role !== undefined && { role: context.role }),
-        ...(topic !== undefined && { topic }),
-        ...(context.max_units !== undefined && { max_units: context.max_units }),
-      },
-    });
-    unwrap(message);
-
-    // 4. Validate max_units before scoring.
-    const limit = context.max_units ?? 100;
-    if (limit < 0) {
-      throw new AkashikError("INVALID_QUERY", "max_units must be non-negative");
-    }
-
-    // 5. Score every visible entry — same as attune.
-    const callerSession = sessions.get(agent) ?? null;
-    const scored: FieldEntryWithRelevance[] = visible.map((entry) => {
-      const writerSession = entry.agent ? (sessions.get(entry.agent) ?? null) : null;
-      const { score, reason } = computeRelevance(entry, context, {
-        visibleEntries: visible,
-        writerSession,
-        callerSession,
-      });
-      return { ...entry, relevance_score: score, relevance_reason: reason };
-    });
-
-    // 6. Sort by relevance descending, epoch descending.
-    scored.sort((a, b) => {
-      if (b.relevance_score !== a.relevance_score) {
-        return b.relevance_score - a.relevance_score;
-      }
-      return b.epoch - a.epoch;
-    });
-
-    // 7. Apply max_units cap.
-    const cappedEntries = scored.slice(0, limit);
-
-    // 8. Detect conflicts among the surviving (caller-visible) entries.
+    // reckon is attune plus conflict detection over the surfaced set.
+    const cappedEntries = scopedView(context, "RECKON");
     const conflicts = findConflicts(cappedEntries);
 
     return { entries: cappedEntries, conflicts };

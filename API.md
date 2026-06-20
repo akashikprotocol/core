@@ -249,7 +249,8 @@ type RegisterResult = {
 
 | Code | When |
 |------|------|
-| `INVALID_ENVELOPE` | `id` or `role` is missing or not a string |
+| `AGENT_REQUIRED` | `id` or `role` is missing, empty, whitespace-only, or not a string |
+| `INVALID_ENTRY` | `capabilities` is provided but is not an array of strings |
 
 ---
 
