@@ -104,6 +104,15 @@ Every operation crosses a standard message envelope. Intent is mandatory on ever
 - [RECKON](./docs/RECKON.md) — conflict detection deep-dive
 - Spec: <https://github.com/akashikprotocol/spec>
 
+## Project documents
+
+- [GOVERNANCE](./GOVERNANCE.md) ~ who decides what, and how contributions flow
+- [PRINCIPLES](./PRINCIPLES.md) ~ the design constitution all changes hold to
+- [CONTRIBUTING](./CONTRIBUTING.md) ~ local development and the dev workflow
+- [CHANGELOG](./CHANGELOG.md) ~ notable changes per release
+- [API](./API.md) ~ the complete public surface of the SDK
+- [LICENSE](./LICENSE) ~ Apache 2.0
+
 ## Design philosophy
 
 Three rules the protocol obeys:
