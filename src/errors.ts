@@ -5,7 +5,9 @@ export type AkashikErrorCode =
   | "INVALID_QUERY" // implemented in Story 2
   | "AGENT_REQUIRED" // implemented in Story 3
   | "INVALID_ENVELOPE" // NEW in v0.2 Story 1
-  | "DRAFT_NOT_FOUND"; // NEW in v0.2 Story 5
+  | "DRAFT_NOT_FOUND" // NEW in v0.2 Story 5
+  | "RETRACT_NOT_AUTHORIZED" // NEW in v0.2 Story 6
+  | "ENTRY_NOT_FOUND"; // NEW in v0.2 Story 6
 
 export class AkashikError extends Error {
   readonly code: AkashikErrorCode;

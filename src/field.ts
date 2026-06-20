@@ -1,3 +1,4 @@
+import { findConflicts } from "./conflicts.js";
 import { protocolVersion, unwrap, wrap } from "./envelope.js";
 import { AkashikError } from "./errors.js";
 import { generateId } from "./id.js";
@@ -14,9 +15,13 @@ import type {
   FieldOptions,
   ReadOptions,
   ReadQuery,
+  ReckonResult,
   RegisterInput,
   RegisterResult,
+  RetractInput,
   Session,
+  SupersedeInput,
+  SupersedeResult,
   WriteInput,
   WriteResult,
 } from "./types.js";
@@ -38,6 +43,9 @@ export function createField(options: FieldOptions = {}): Field {
 
   // Story 5: draft storage (keyed by draft id)
   const drafts = new Map<string, FieldEntry>();
+
+  // Story 6: supersession tracking (predecessor id → superseding entry id)
+  const supersededBy = new Map<string, string>();
 
   // write — store an entry with mandatory intent
   async function write(input: WriteInput): Promise<WriteResult> {
@@ -160,6 +168,11 @@ export function createField(options: FieldOptions = {}): Field {
     if (topic !== undefined) {
       visible = visible.filter((fieldEntry) => fieldEntry.entry.topic === topic);
     }
+
+    // Story 6: filter by status — only committed entries visible to others.
+    // Retracted and superseded entries are excluded. Drafts of other agents
+    // are already absent (they live in the drafts Map, not entries).
+    visible = visible.filter((fieldEntry) => fieldEntry.status === "committed");
 
     // Story 5: include calling agent's own drafts.
     for (const draft of drafts.values()) {
@@ -431,7 +444,229 @@ export function createField(options: FieldOptions = {}): Field {
     entries.push(retracted);
   }
 
-  return { write, read, attune, register, deregister, draft, commit, discard };
+  async function retract(input: RetractInput): Promise<void> {
+    // 1. Validate input shape.
+    if (!input || typeof input !== "object") {
+      throw new AkashikError("ENTRY_NOT_FOUND", "retract() requires input object");
+    }
+    if (typeof input.id !== "string" || input.id.length === 0) {
+      throw new AkashikError("ENTRY_NOT_FOUND", "retract() requires a non-empty id");
+    }
+    if (typeof input.agent !== "string" || input.agent.trim().length === 0) {
+      throw new AkashikError("AGENT_REQUIRED", "retract() requires a non-empty agent");
+    }
+    if (typeof input.intent !== "string" || input.intent.trim().length < minIntentLength) {
+      throw new AkashikError(
+        "INTENT_TOO_SHORT",
+        `retract() requires intent of length >= ${minIntentLength}`,
+      );
+    }
+
+    // 2. Locate the entry.
+    const target = entries.find((e) => e.id === input.id);
+    if (!target) {
+      throw new AkashikError("ENTRY_NOT_FOUND", `no entry found with id: ${input.id}`);
+    }
+
+    // 3. Authorisation: only the original writer can retract.
+    if (target.agent !== input.agent) {
+      throw new AkashikError(
+        "RETRACT_NOT_AUTHORIZED",
+        `retract() can only be performed by the original writer (entry author: ${target.agent ?? "<none>"}, caller: ${input.agent})`,
+      );
+    }
+
+    // 4. Idempotence: already-retracted or superseded entries are a no-op.
+    if (target.status === "retracted" || target.status === "superseded") {
+      return;
+    }
+
+    // 5. Envelope wrap.
+    const newEpoch = epochCounter++;
+    const message = wrap({
+      type: "RETRACT",
+      sender: input.agent,
+      epoch: newEpoch,
+      payload: { id: input.id, intent: input.intent },
+    });
+    unwrap(message);
+
+    // 6. Mutate status in place (entry stays in array for audit).
+    target.status = "retracted";
+  }
+
+  async function supersede(input: SupersedeInput): Promise<SupersedeResult> {
+    // 1. Validate input shape.
+    if (!input || typeof input !== "object") {
+      throw new AkashikError("ENTRY_NOT_FOUND", "supersede() requires input object");
+    }
+    if (typeof input.superseding_id !== "string" || input.superseding_id.length === 0) {
+      throw new AkashikError("ENTRY_NOT_FOUND", "supersede() requires a non-empty superseding_id");
+    }
+    if (!isPlainObject(input.entry)) {
+      throw new AkashikError("INVALID_ENTRY", "supersede() requires an entry object");
+    }
+    if (typeof input.agent !== "string" || input.agent.trim().length === 0) {
+      throw new AkashikError("AGENT_REQUIRED", "supersede() requires a non-empty agent");
+    }
+    if (typeof input.intent !== "string" || input.intent.trim().length < minIntentLength) {
+      throw new AkashikError(
+        "INTENT_TOO_SHORT",
+        `supersede() requires intent of length >= ${minIntentLength}`,
+      );
+    }
+
+    // 2. Locate the targeted predecessor.
+    const targeted = entries.find((e) => e.id === input.superseding_id);
+    if (!targeted) {
+      throw new AkashikError("ENTRY_NOT_FOUND", `no entry found with id: ${input.superseding_id}`);
+    }
+
+    // 3. Cannot supersede a retracted entry.
+    if (targeted.status === "retracted") {
+      throw new AkashikError("ENTRY_NOT_FOUND", "cannot supersede a retracted entry");
+    }
+
+    // 4. Follow the chain to find the current latest committed entry.
+    let actualPredecessorId = input.superseding_id;
+    while (supersededBy.has(actualPredecessorId)) {
+      actualPredecessorId = supersededBy.get(actualPredecessorId) as string;
+    }
+    const actualPredecessor = entries.find((e) => e.id === actualPredecessorId);
+    if (!actualPredecessor || actualPredecessor.status !== "committed") {
+      throw new AkashikError(
+        "ENTRY_NOT_FOUND",
+        `chain resolution failed for superseding_id: ${input.superseding_id}`,
+      );
+    }
+
+    // 5. Create the new committed entry.
+    const newEpoch = epochCounter++;
+    const newTimestamp = Date.now();
+    const newEntry: FieldEntry = {
+      id: generateId(),
+      timestamp: newTimestamp,
+      epoch: newEpoch,
+      agent: input.agent,
+      status: "committed",
+      entry: input.entry,
+      intent: input.intent,
+    };
+
+    // 6. Envelope wrap.
+    const message = wrap({
+      type: "SUPERSEDE",
+      sender: input.agent,
+      epoch: newEpoch,
+      payload: {
+        superseding_id: actualPredecessorId,
+        entry: input.entry,
+        intent: input.intent,
+      },
+    });
+    unwrap(message);
+
+    // 7. Mark actual predecessor superseded and record chain link.
+    actualPredecessor.status = "superseded";
+    supersededBy.set(actualPredecessorId, newEntry.id);
+
+    // 8. Add new entry.
+    entries.push(newEntry);
+
+    return { id: newEntry.id, epoch: newEpoch, timestamp: newTimestamp };
+  }
+
+  async function reckon(context: AttuneContext): Promise<ReckonResult> {
+    // 1. Validate context (same rules as attune).
+    if (
+      context === undefined ||
+      context === null ||
+      typeof context !== "object" ||
+      typeof context.agent !== "string" ||
+      context.agent.trim().length === 0
+    ) {
+      throw new AkashikError("AGENT_REQUIRED", "reckon() requires a non-empty agent identifier");
+    }
+
+    const { agent, topic } = context;
+
+    // 2. Compute visible entries — same logic as attune (duplicated deliberately).
+    let visible = entries.filter((e) => e.agent !== agent);
+    if (topic !== undefined) {
+      visible = visible.filter((e) => e.entry.topic === topic);
+    }
+    visible = visible.filter((e) => e.status === "committed");
+
+    for (const draft of drafts.values()) {
+      if (draft.agent === agent) {
+        if (topic === undefined || draft.entry.topic === topic) {
+          visible.push(draft);
+        }
+      }
+    }
+
+    // 3. Envelope wrap with type "RECKON".
+    const message = wrap({
+      type: "RECKON",
+      sender: agent,
+      epoch: epochCounter,
+      payload: {
+        agent,
+        ...(context.role !== undefined && { role: context.role }),
+        ...(topic !== undefined && { topic }),
+        ...(context.max_units !== undefined && { max_units: context.max_units }),
+      },
+    });
+    unwrap(message);
+
+    // 4. Validate max_units before scoring.
+    const limit = context.max_units ?? 100;
+    if (limit < 0) {
+      throw new AkashikError("INVALID_QUERY", "max_units must be non-negative");
+    }
+
+    // 5. Score every visible entry — same as attune.
+    const callerSession = sessions.get(agent) ?? null;
+    const scored: FieldEntryWithRelevance[] = visible.map((entry) => {
+      const writerSession = entry.agent ? (sessions.get(entry.agent) ?? null) : null;
+      const { score, reason } = computeRelevance(entry, context, {
+        visibleEntries: visible,
+        writerSession,
+        callerSession,
+      });
+      return { ...entry, relevance_score: score, relevance_reason: reason };
+    });
+
+    // 6. Sort by relevance descending, epoch descending.
+    scored.sort((a, b) => {
+      if (b.relevance_score !== a.relevance_score) {
+        return b.relevance_score - a.relevance_score;
+      }
+      return b.epoch - a.epoch;
+    });
+
+    // 7. Apply max_units cap.
+    const cappedEntries = scored.slice(0, limit);
+
+    // 8. Detect conflicts among the surviving (caller-visible) entries.
+    const conflicts = findConflicts(cappedEntries);
+
+    return { entries: cappedEntries, conflicts };
+  }
+
+  return {
+    write,
+    read,
+    attune,
+    register,
+    deregister,
+    draft,
+    commit,
+    discard,
+    retract,
+    supersede,
+    reckon,
+  };
 }
 
 // ── private helpers ──────────────────────────────────────────────────────────

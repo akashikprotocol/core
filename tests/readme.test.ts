@@ -1,36 +1,35 @@
 import { describe, expect, it } from "vitest";
 import { createField } from "../src/index.js";
 
-describe("README Quick Start", () => {
-  it("the documented example runs and produces expected output", async () => {
+describe("README Quick Start — v0.2", () => {
+  it("the documented example runs and produces the conflict the README shows", async () => {
     const field = createField();
 
-    // A research agent logs a finding, with intent.
+    await field.register({ id: "researcher", role: "researcher" });
+    await field.register({ id: "fact-checker", role: "researcher" });
+
     await field.write({
-      entry: { topic: "competitor-pricing", source: "crunchbase", value: "$49/mo" },
-      intent: "gathering market signal for pricing recommendation",
+      entry: { topic: "competitor-pricing", price: "$49/mo" },
+      intent: "documenting competitor pricing observed on g2",
       agent: "researcher",
     });
 
-    // A second agent logs a constraint it discovered, also with intent.
     await field.write({
-      entry: { topic: "competitor-pricing", note: "enterprise tier gated, unverified" },
-      intent: "flagging data quality before the writer uses it",
+      entry: { topic: "competitor-pricing", price: "$39/mo" },
+      intent: "fact-checker correction after verifying competitor site directly",
       agent: "fact-checker",
     });
 
-    // A writer agent attunes to the field — no query string, no search.
-    const relevant = await field.attune({ agent: "writer", topic: "competitor-pricing" });
+    const result = await field.reckon({
+      agent: "writer",
+      topic: "competitor-pricing",
+    });
 
-    // The README says: "Both entries, surfaced with their intents, so the writer
-    // can reason about *why* the field looks the way it does."
-    expect(relevant).toHaveLength(2);
-    // Sorted by relevance: both match topic (0.6); tiebreaker is epoch descending.
-    // fact-checker was written second (higher epoch) → comes first.
-    expect(relevant.map((e) => e.intent)).toEqual([
-      "flagging data quality before the writer uses it",
-      "gathering market signal for pricing recommendation",
-    ]);
-    expect(relevant.map((e) => e.agent)).toEqual(["fact-checker", "researcher"]);
+    // README says: result.entries.length === 2
+    expect(result.entries).toHaveLength(2);
+
+    // README says: result.conflicts is a 1-element array with keys: ["price"]
+    expect(result.conflicts).toHaveLength(1);
+    expect(result.conflicts[0]?.keys).toEqual(["price"]);
   });
 });

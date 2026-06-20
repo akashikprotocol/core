@@ -2,13 +2,15 @@
  * examples/protocol-showcase.ts
  *
  * Full Akashik Protocol v0.2 showcase.
- * Demonstrates every capability shipped through Stories 0–5:
+ * Demonstrates every capability shipped through Stories 0–7:
  *
  *   ✦ REGISTER / DEREGISTER — agent lifecycle with roles
  *   ✦ RECORD (write) — mandatory intent on every write
  *   ✦ read() — declarative query; write-order, unscored
  *   ✦ ATTUNE — relevance-scored, sorted, capped with max_units
  *   ✦ DRAFT / COMMIT / DISCARD — draft lifecycle
+ *   ✦ RETRACT / SUPERSEDE — committed-entry lifecycle
+ *   ✦ RECKON — conflict-aware attune
  *   ✦ role parameter — explicit role for scoring without a session
  *   ✦ Message envelope — silently wraps every operation
  *
@@ -255,9 +257,93 @@ async function main() {
     `    ${chalk.bold.red("DISCARD")}  ${chalk.bold("market-analyst")}  ${chalk.dim("reason: decided this note adds no new signal")}\n`,
   );
 
-  // ── 6. role parameter ────────────────────────────────────────────────────────
+  // ── 6. RETRACT + SUPERSEDE ────────────────────────────────────────────────
 
-  header("6 · role parameter — score without registration");
+  header("6 · RETRACT + SUPERSEDE — committed-entry lifecycle");
+
+  // market-analyst retracts the per-seat pricing entry (stale data).
+  subheader("market-analyst retracts the per-seat pricing entry");
+  const perSeatEntry = await field.read({ topic: "saas-pricing", model: "per-seat" });
+  const perSeatId = perSeatEntry[0]?.id ?? "";
+  await field.retract({
+    id: perSeatId,
+    intent: "G2 per-seat data is now confirmed stale — withdrawing before writer uses it",
+    agent: "market-analyst",
+  });
+  console.log(
+    `    ${chalk.bold.red("RETRACT")}  ${chalk.bold("market-analyst")}  ${chalk.dim("id:")}${chalk.gray(perSeatId)}`,
+  );
+
+  // Verify: retracted entry no longer appears in content-writer's attune.
+  const afterRetract = await field.attune({ agent: "content-writer", topic: "saas-pricing" });
+  const leaked = afterRetract.find((e) => e.id === perSeatId);
+  console.log(
+    `    ${chalk.dim("retracted entry visible to content-writer:")} ${
+      leaked ? chalk.bold.red("YES — leak!") : chalk.bold.green("NO — hidden ✓")
+    }\n`,
+  );
+
+  // fact-checker supersedes the usage-based pricing entry with corrected figures.
+  subheader("fact-checker supersedes the usage-based pricing entry");
+  const usageBasedEntry = await field.read({ topic: "saas-pricing", model: "usage-based" });
+  const usageBasedId = usageBasedEntry[0]?.id ?? "";
+  const { id: supersederId } = await field.supersede({
+    superseding_id: usageBasedId,
+    entry: {
+      topic: "saas-pricing",
+      model: "usage-based",
+      price: "$0.006/req",
+      source: "stripe-verified",
+    },
+    intent:
+      "corrected usage-based unit price after verifying Stripe's published rate card directly",
+    agent: "fact-checker",
+  });
+  console.log(
+    `    ${chalk.bold.yellow("SUPERSEDE")}  ${chalk.bold("fact-checker")}  ${chalk.dim("predecessor:")}${chalk.gray(usageBasedId)}`,
+  );
+  console.log(`    ${chalk.dim("new entry:")}  ${chalk.gray(supersederId)}\n`);
+
+  // Verify: only the superseding entry appears; predecessor is gone.
+  const afterSupersede = await field.attune({ agent: "content-writer", topic: "saas-pricing" });
+  console.log(
+    `    ${chalk.dim("entries visible after retract + supersede:")} ${chalk.bold.cyan(String(afterSupersede.length))} (was ${String(writerView.length)})`,
+  );
+  console.log(
+    `    ${chalk.dim("prices visible:")} ${chalk.white(
+      afterSupersede
+        .map((e) => String(e.entry.price ?? e.entry.model ?? ""))
+        .filter(Boolean)
+        .join(", "),
+    )}\n`,
+  );
+
+  // Supersession chain: strategist further supersedes the usage-based entry
+  // by targeting the original id — chain resolves to the latest automatically.
+  subheader("strategist extends the chain by superseding the original id again");
+  const { id: chainLatestId } = await field.supersede({
+    superseding_id: usageBasedId,
+    entry: {
+      topic: "saas-pricing",
+      model: "usage-based",
+      price: "$0.005/req",
+      source: "internal-benchmark",
+    },
+    intent: "internal benchmark confirms even lower unit price than Stripe public rate card",
+    agent: "strategist",
+  });
+  console.log(
+    `    ${chalk.bold.yellow("SUPERSEDE")}  ${chalk.bold("strategist")}  ${chalk.dim("chain latest:")}${chalk.gray(chainLatestId)}\n`,
+  );
+  const chainView = await field.attune({ agent: "content-writer", topic: "saas-pricing" });
+  const chainEntry = chainView.find((e) => e.id === chainLatestId);
+  console.log(
+    `    ${chalk.dim("chain latest price in attune:")} ${chalk.bold.green(String(chainEntry?.entry.price ?? ""))} ✓\n`,
+  );
+
+  // ── 7. role parameter ────────────────────────────────────────────────────────
+
+  header("7 · role parameter — score without registration");
 
   subheader(
     "field.attune({ agent: 'guest-analyst', role: 'researcher', topic: 'saas-pricing' })\n" +
@@ -272,9 +358,9 @@ async function main() {
   });
   for (const e of guestView) printEntry(e);
 
-  // ── 7. max_units ─────────────────────────────────────────────────────────────
+  // ── 8. max_units ─────────────────────────────────────────────────────────────
 
-  header("7 · max_units — cap on returned entries");
+  header("8 · max_units — cap on returned entries");
 
   subheader(
     "field.attune({ agent: 'content-writer', topic: 'saas-pricing', max_units: 2 })\n" +
@@ -291,18 +377,54 @@ async function main() {
   );
   for (const e of capped) printEntry(e);
 
-  // ── 8. Strategist attunes to everything ──────────────────────────────────────
+  // ── 9. RECKON ────────────────────────────────────────────────────────────
 
-  header("8 · Cross-role view — strategist reads the full field");
+  header("9 · RECKON — conflict-aware attune");
+
+  // After all the writes, retracts, and supersessions in sections 2-6, let the
+  // content-writer reckon on saas-pricing to see what's agreed, what conflicts.
+  subheader(
+    "field.reckon({ agent: 'content-writer', topic: 'saas-pricing' })\n" +
+      "  same entries as attune, plus a conflict list across visible entries",
+  );
+
+  const reckonResult = await field.reckon({ agent: "content-writer", topic: "saas-pricing" });
+
+  console.log(
+    `    ${chalk.dim("visible entries:")} ${chalk.bold.cyan(String(reckonResult.entries.length))}   ` +
+      `${chalk.dim("conflicts detected:")} ${reckonResult.conflicts.length > 0 ? chalk.bold.red(String(reckonResult.conflicts.length)) : chalk.bold.green("0")}\n`,
+  );
+
+  for (const e of reckonResult.entries) printEntry(e);
+
+  if (reckonResult.conflicts.length > 0) {
+    subheader(`${reckonResult.conflicts.length} conflict(s) detected:`);
+    for (const c of reckonResult.conflicts) {
+      const aTag = badge("agent", c.a.agent ?? "anon", chalk.magenta);
+      const bTag = badge("agent", c.b.agent ?? "anon", chalk.magenta);
+      const keysTag = chalk.bold.red(c.keys.join(", "));
+      console.log(`    ${chalk.bold.red("✖ CONFLICT")}  keys: ${keysTag}`);
+      console.log(`    ${chalk.dim("├")}  ${aTag}  ${chalk.dim(JSON.stringify(c.a.entry))}`);
+      console.log(`    ${chalk.dim("└")}  ${bTag}  ${chalk.dim(JSON.stringify(c.b.entry))}\n`);
+    }
+  } else {
+    console.log(
+      `    ${chalk.bold.green("✓ No conflicts")}  all visible entries agree on shared keys\n`,
+    );
+  }
+
+  // ── 10. Cross-role view ───────────────────────────────────────────────
+
+  header("10 · Cross-role view — strategist reads the full field");
 
   subheader("field.attune({ agent: 'strategist' })  →  all entries except strategist's own");
 
   const strategistView = await field.attune({ agent: "strategist" });
   for (const e of strategistView) printEntry(e);
 
-  // ── 9. DEREGISTER ────────────────────────────────────────────────────────────
+  // ── 11. DEREGISTER ──────────────────────────────────────────────────────────
 
-  header("9 · DEREGISTER — session teardown");
+  header("11 · DEREGISTER — session teardown");
 
   for (const { id } of agents) {
     await field.deregister({ id });
@@ -316,7 +438,7 @@ async function main() {
     chalk.bold.green("\n  ✓ Showcase complete.\n") +
       chalk.dim("    Every operation crossed the message envelope.\n") +
       chalk.dim(
-        "    Draft lifecycle, relevance scoring, role matching, and max_units all active.\n",
+        "    Draft lifecycle, retract/supersede, reckon (conflict detection), relevance scoring, role matching, and max_units all active.\n",
       ),
   );
 }

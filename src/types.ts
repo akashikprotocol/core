@@ -114,7 +114,38 @@ export type FieldEntryWithRelevance = FieldEntry & {
   relevance_reason: RelevanceReason;
 };
 
-/** The public Field interface — v0.2 Story 5. */
+/** Input to field.retract(). */
+export type RetractInput = {
+  id: string;
+  intent: string;
+  agent: string;
+};
+
+/** Input to field.supersede(). */
+export type SupersedeInput = {
+  superseding_id: string;
+  entry: Record<string, unknown>;
+  intent: string;
+  agent: string;
+};
+
+/** Result of field.supersede(). */
+export type SupersedeResult = {
+  id: string;
+  epoch: number;
+  timestamp: number;
+};
+
+// Re-export Conflict from the conflicts module so it's a first-class SDK type.
+export type { Conflict } from "./conflicts.js";
+
+/** Result of field.reckon() — Story 7. */
+export type ReckonResult = {
+  entries: FieldEntryWithRelevance[];
+  conflicts: Conflict[];
+};
+
+/** The public Field interface — v0.2 Story 7. */
 export type Field = {
   write(input: WriteInput): Promise<WriteResult>;
   read(query?: ReadQuery, options?: ReadOptions): Promise<FieldEntry[]>;
@@ -124,4 +155,10 @@ export type Field = {
   draft(input: DraftInput): Promise<{ draft_id: string }>;
   commit(input: CommitInput): Promise<CommitResult>;
   discard(input: DiscardInput): Promise<void>;
+  retract(input: RetractInput): Promise<void>;
+  supersede(input: SupersedeInput): Promise<SupersedeResult>;
+  reckon(context: AttuneContext): Promise<ReckonResult>;
 };
+
+// Bring Conflict into scope for use in ReckonResult above.
+import type { Conflict } from "./conflicts.js";

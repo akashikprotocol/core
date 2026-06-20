@@ -1,14 +1,14 @@
 # @akashikprotocol/core
 
-The reference SDK for the **Akashik Protocol** — shared memory and coordination for multi-agent AI systems.
+The TypeScript SDK for the Akashik Protocol — an open standard for shared memory in multi-agent AI systems.
 
-AI agents today are brilliant individuals with amnesia. They can't see what other agents are doing, can't remember what they decided yesterday, and have no shared sense of what the work is for.
+This package is the Level 0 reference implementation of the Akashik Protocol Specification. v0.2 reaches full Level 0 conformance with selected Level 1 operations.
 
-Akashik is an open protocol for fixing that. Persistent shared state. Mandatory intent on every write. Attunement over search.
+## Status
 
-Where **MCP** defines how an agent reaches for tools, and **A2A** defines how agents talk to each other, **Akashik** defines what they share, how they stay coordinated, and how they reason about each other's context.
-
----
+- Protocol spec: <https://github.com/akashikprotocol/spec>
+- Conformance level: Level 0 + selected Level 1 (DEREGISTER, RETRACT, SUPERSEDE, DETECT in list mode via reckon)
+- SDK version: v0.2.0
 
 ## Install
 
@@ -16,61 +16,115 @@ Where **MCP** defines how an agent reaches for tools, and **A2A** defines how ag
 npm install @akashikprotocol/core
 ```
 
-## Quick start
+## Quick Start
 
 ```ts
 import { createField } from "@akashikprotocol/core";
 
 const field = createField();
 
-// A research agent logs a finding, with intent.
+// Agents register with the field, declaring identity and role.
+await field.register({
+  id: "researcher",
+  role: "researcher",
+});
+
+await field.register({
+  id: "fact-checker",
+  role: "researcher",
+});
+
+// Agents record observations with mandatory intent.
 await field.write({
-  entry: { topic: "competitor-pricing", source: "crunchbase", value: "$49/mo" },
-  intent: "gathering market signal for pricing recommendation",
+  entry: { topic: "competitor-pricing", price: "$49/mo" },
+  intent: "documenting competitor pricing observed on g2",
   agent: "researcher",
 });
 
-// A second agent logs a constraint it discovered, also with intent.
 await field.write({
-  entry: { topic: "competitor-pricing", note: "enterprise tier gated, unverified" },
-  intent: "flagging data quality before the writer uses it",
+  entry: { topic: "competitor-pricing", price: "$39/mo" },
+  intent: "fact-checker correction after verifying competitor site directly",
   agent: "fact-checker",
 });
 
-// A writer agent attunes to the field — no query string, no search.
-const relevant = await field.attune({ agent: "writer", topic: "competitor-pricing" });
+// When a writer needs to act, they reckon with the field.
+// Reckon returns relevant entries plus conflicts among them.
+const result = await field.reckon({
+  agent: "writer",
+  topic: "competitor-pricing",
+});
 
-// → Both entries, surfaced with their intents, so the writer
-//   can reason about *why* the field looks the way it does
-//   before it puts a single word on the page.
+console.log(result.entries.length);
+// => 2
+
+console.log(result.conflicts);
+// => [{ a: <researcher entry>, b: <fact-checker entry>, keys: ["price"] }]
+//
+// The protocol surfaces the disagreement. The writer decides what to do with it.
 ```
 
-That's the whole thesis in a handful of lines. Every write carries intent. `attune()` replaces search with relevance. Multiple agents share one field.
+## What this SDK provides
 
-Full runnable example: [`examples/two-agents.ts`](./examples/two-agents.ts).
+The protocol primitives, named with deliberate gravity:
 
-Deep-dive on attunement: [`docs/ATTUNE.md`](./docs/ATTUNE.md).
+- `register` / `deregister` — agent lifecycle
+- `write` — record with mandatory intent (immediately committed)
+- `draft` / `commit` / `discard` — write with private review before publishing
+- `retract` — withdraw a committed entry (author only)
+- `supersede` — replace an entry with a newer one (any agent)
+- `read` — declarative query of the field state
+- `attune` — protocol-decided relevance ranking
+- `reckon` — attune plus conflict detection
 
----
+Every operation crosses a standard message envelope. Intent is mandatory on every state change.
 
-## What's in v0.1
+## What v0.2 adds over v0.1
 
-- `write({ entry, intent })` — mandatory intent, enforced at the type level and at runtime.
-- `read(query)` — retrieve entries from the field.
-- `attune(context)` — surface what's relevant to an agent right now.
-- TypeScript-first, full types exported.
-- In-memory backend. Zero runtime dependencies beyond `ulid`.
+- Standard message envelope
+- REGISTER and DEREGISTER with capability exchange
+- Relevance scoring with topic, role, recency, and intent quality components
+- max_units truncation; role parameter
+- Draft mode (private scratchpad before committing to the shared field)
+- Retract (author-only, idempotent)
+- Supersede with chain extension (any agent)
+- Reckon — conflict detection on mechanical key-value mismatch
 
-Persistent storage, framework adapters, and a Python port are on the roadmap.
+## What v0.2 does not yet do
 
----
+- Persistent storage (v0.3)
+- Event log / REPLAY (v0.3)
+- Full Lamport logical clocks (v0.3 — v0.2 uses a monotonic counter)
+- Confidence on RECORD (v0.3)
+- Vector embeddings or semantic relevance (v0.4, Level 2)
+- Transport bindings (v0.5, Level 3)
 
-## Learn more
+## Documentation
 
-- **Website:** [akashikprotocol.com](https://akashikprotocol.com)
-- **Specification:** [github.com/akashikprotocol/spec](https://github.com/akashikprotocol/spec)
-- **Org:** [github.com/akashikprotocol](https://github.com/akashikprotocol)
+- [ATTUNE](./docs/ATTUNE.md) — relevance scoring deep-dive
+- [RECKON](./docs/RECKON.md) — conflict detection deep-dive
+- Spec: <https://github.com/akashikprotocol/spec>
+
+## Design philosophy
+
+Three rules the protocol obeys:
+
+1. **The protocol decides relevance and detects disagreement; the agent decides resolution.** Akashik surfaces; the agent chooses what to do.
+2. **Intent is mandatory.** Every state-changing operation requires a non-trivial intent string. The protocol thesis is that intent makes multi-agent state legible.
+3. **Mechanical now, semantic later.** v0.2 detects conflicts mechanically. v0.4 adds semantic conflict reasoning. Each layer is shipped when it can be done honestly.
+
+## Examples
+
+```bash
+npm run example           # two-agents.ts — the v0.1 canonical example
+npm run example:conflict  # conflict.ts — the v0.2 canonical example
+npm run example:coding    # coding-agents.ts — multi-phase collaboration
+npm run example:showcase  # protocol-showcase.ts — every capability
+```
 
 ## License
 
-Apache-2.0
+Apache 2.0.
+
+## Contributing
+
+Issues and discussion at <https://github.com/akashikprotocol/core>.

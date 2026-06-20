@@ -213,9 +213,23 @@ async function main() {
     agent: "implementer",
   });
 
-  // ── Final state: full field in write order ──────────────────────────────────
+  // ── Final state: reckon + full field in write order ────────────────────────
 
-  section("Final field state — all entries in write order");
+  section("Final state — reckon() for conflicts + all entries in write order");
+
+  // Reckon across the full field from the planner's view — reveals any
+  // disagreements across progress, decision, and risk entries.
+  const reckoning = await field.reckon({ agent: "planner" });
+  if (reckoning.conflicts.length > 0) {
+    console.log(`\n  reckon() — ${reckoning.conflicts.length} conflict(s) detected:`);
+    for (const c of reckoning.conflicts) {
+      console.log(
+        `    ✖ keys [${c.keys.join(", ")}]  ${c.a.agent ?? "anon"} vs ${c.b.agent ?? "anon"}`,
+      );
+    }
+  } else {
+    console.log("\n  reckon() — ✓ no conflicts detected across the field");
+  }
 
   const all = await field.read();
   for (const e of all) printEntry(e);
