@@ -113,6 +113,12 @@ Every operation crosses a standard message envelope. Intent is mandatory on ever
 - [API](./API.md) ~ the complete public surface of the SDK
 - [LICENSE](./LICENSE) ~ Apache 2.0
 
+## Specs
+
+- [Mission](./specs/mission.md) ~ what the project is for and who it serves
+- [Tech stack](./specs/tech-stack.md) ~ the technical choices and their reasoning
+- [Roadmap](./specs/roadmap.md) ~ planned releases mapped to conformance levels
+
 ## Design philosophy
 
 Three rules the protocol obeys:
