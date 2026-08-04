@@ -7,6 +7,7 @@ export type {
   AttuneContext,
   CommitInput,
   CommitResult,
+  Confidence,
   Conflict,
   DeregisterEvent,
   DiscardInput,

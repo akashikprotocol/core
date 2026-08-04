@@ -7,7 +7,8 @@ export type AkashikErrorCode =
   | "INVALID_ENVELOPE" // NEW in v0.2 Story 1
   | "DRAFT_NOT_FOUND" // NEW in v0.2 Story 5
   | "RETRACT_NOT_AUTHORIZED" // NEW in v0.2 Story 6
-  | "ENTRY_NOT_FOUND"; // NEW in v0.2 Story 6
+  | "ENTRY_NOT_FOUND" // NEW in v0.2 Story 6
+  | "INVALID_CONFIDENCE"; // NEW in v0.3 Story 4
 
 export class AkashikError extends Error {
   readonly code: AkashikErrorCode;

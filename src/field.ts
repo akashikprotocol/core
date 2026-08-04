@@ -34,6 +34,7 @@ import type {
   WriteInput,
   WriteResult,
 } from "./types.js";
+import { validateConfidence } from "./validation.js";
 
 // ── constants ────────────────────────────────────────────────────────────────
 
@@ -138,6 +139,9 @@ export function createField(options: FieldOptions = {}): Field {
       );
     }
 
+    // 3b. Validate confidence, if supplied.
+    validateConfidence(input.confidence);
+
     // 4. Bring the projection current, then append and apply.
     await ensureCurrent();
 
@@ -147,6 +151,7 @@ export function createField(options: FieldOptions = {}): Field {
       entry_id: generateId(),
       entry: input.entry,
       intent: input.intent,
+      ...(input.confidence !== undefined && { confidence: input.confidence }),
     });
 
     // Re-catch-up after append rather than applying `event` directly: under
@@ -366,6 +371,7 @@ export function createField(options: FieldOptions = {}): Field {
         { minIntentLength, actualLength: trimmedIntent.length },
       );
     }
+    validateConfidence(input.confidence);
 
     await ensureCurrent();
 
@@ -378,6 +384,7 @@ export function createField(options: FieldOptions = {}): Field {
       epoch: clock.tick(),
       ...(input.agent !== undefined && { agent: input.agent }),
       status: "draft",
+      ...(input.confidence !== undefined && { confidence: input.confidence }),
       entry: input.entry,
       intent: input.intent,
     };
@@ -403,12 +410,15 @@ export function createField(options: FieldOptions = {}): Field {
     }
 
     // 3. Promote: append a RECORD event under the draft's original id.
+    //    Confidence, if any, was set at draft() time and carries through
+    //    unchanged — commit() is not a second place to set it.
     const event = recordEvent({
       lamport: clock.tick(),
       agent: draftEntry.agent ?? null,
       entry_id: draftEntry.id,
       entry: draftEntry.entry,
       intent: draftEntry.intent,
+      ...(draftEntry.confidence !== undefined && { confidence: draftEntry.confidence }),
     });
     // See write() for why this re-catches-up instead of applying directly.
     await adapter.append([event]);
@@ -549,6 +559,7 @@ export function createField(options: FieldOptions = {}): Field {
         `supersede() requires intent of length >= ${minIntentLength}`,
       );
     }
+    validateConfidence(input.confidence);
 
     await ensureCurrent();
 
@@ -577,7 +588,9 @@ export function createField(options: FieldOptions = {}): Field {
     }
 
     // 5. Two events in one atomic batch: mark the predecessor superseded,
-    //    then record the new entry, linked back via `supersedes`.
+    //    then record the new entry, linked back via `supersedes`. Confidence
+    //    applies to the new entry only — the STATUS_CHANGE marking the
+    //    predecessor superseded carries none.
     const markOld = statusChangeEvent({
       lamport: clock.tick(),
       agent: input.agent,
@@ -592,6 +605,7 @@ export function createField(options: FieldOptions = {}): Field {
       entry: input.entry,
       intent: input.intent,
       supersedes: actualPredecessorId,
+      ...(input.confidence !== undefined && { confidence: input.confidence }),
     });
 
     // See write() for why this re-catches-up instead of applying directly.

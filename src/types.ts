@@ -10,11 +10,26 @@ export type FieldOptions = {
   adapter?: StorageAdapter;
 };
 
+/**
+ * An agent's confidence in an observation it is recording.
+ *
+ * The protocol carries confidence and surfaces it to reading agents. It does
+ * NOT use confidence for relevance ranking or conflict resolution. Confidence
+ * is an input to the agent's decision, not to the protocol's. NEW in v0.3.
+ */
+export type Confidence = {
+  /** How confident the writing agent is, from 0.0 to 1.0 inclusive. */
+  score: number;
+  /** Why. Optional but encouraged. */
+  reason?: string;
+};
+
 /** Input shape for field.write(). */
 export type WriteInput = {
   entry: Record<string, unknown>;
   intent: string;
   agent?: string;
+  confidence?: Confidence; // NEW in v0.3 Story 4
 };
 
 /** Return shape from field.write(). */
@@ -37,6 +52,7 @@ export type FieldEntry = {
   status: FieldEntryStatus; // v0.2 — defaults to "committed" for write()
   entry: Record<string, unknown>;
   intent: string;
+  confidence?: Confidence; // NEW in v0.3 Story 4 — present only when the writer supplied it
 };
 
 /** Query shape for field.read() — implemented in Story 2. */
@@ -52,6 +68,7 @@ export type DraftInput = {
   entry: Record<string, unknown>;
   intent: string;
   agent?: string;
+  confidence?: Confidence; // NEW in v0.3 Story 4
 };
 
 /** Input to field.commit(). */
@@ -133,6 +150,7 @@ export type SupersedeInput = {
   entry: Record<string, unknown>;
   intent: string;
   agent: string;
+  confidence?: Confidence; // NEW in v0.3 Story 4 — carried on the new entry only
 };
 
 /** Result of field.supersede(). */

@@ -51,6 +51,7 @@ export function applyEvent(projection: Projection, event: FieldEvent): Projectio
         status: "committed",
         entry: event.entry,
         intent: event.intent,
+        ...(event.confidence !== undefined && { confidence: event.confidence }),
       };
       projection.entries.set(event.entry_id, fieldEntry);
       break;
