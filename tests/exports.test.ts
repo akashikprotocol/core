@@ -7,6 +7,7 @@ describe("public exports — runtime", () => {
     expect(exportedKeys).toEqual([
       "AkashikError",
       "EVENT_FORMAT_VERSION",
+      "FIELD_PROTOCOL_LEVELS",
       "createField",
       "createMemoryAdapter",
     ]);
@@ -22,6 +23,10 @@ describe("public exports — runtime", () => {
 
   it("EVENT_FORMAT_VERSION is 1", () => {
     expect(akashik.EVENT_FORMAT_VERSION).toBe(1);
+  });
+
+  it("FIELD_PROTOCOL_LEVELS is ['L0', 'L1']", () => {
+    expect(akashik.FIELD_PROTOCOL_LEVELS).toEqual(["L0", "L1"]);
   });
 
   it("AkashikError is a class extending Error", () => {

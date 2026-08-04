@@ -16,6 +16,19 @@ export type EventScope = {
  */
 export interface StorageAdapter {
   /**
+   * Flags this adapter contributes to the field's advertised capabilities.
+   * NEW in v0.3 Story 6.
+   *
+   * The only recognised flag in v0.3 is "durable", declared by adapters whose
+   * state survives process restart. Adapters may omit this entirely, which
+   * is equivalent to declaring [].
+   *
+   * Unrecognised strings are passed through to field_capabilities unchanged.
+   * The field does not police adapter vocabulary.
+   */
+  readonly capabilities?: readonly string[];
+
+  /**
    * Append events atomically — all land or none do. Returns assigned seq
    * values in the same order as the input events.
    */

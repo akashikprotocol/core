@@ -2,6 +2,7 @@ import type { StorageAdapter } from "./adapter.js";
 import { createMemoryAdapter } from "./adapters/memory.js";
 import { createLamportClock } from "./clock.js";
 import { findConflicts } from "./conflicts.js";
+import { FIELD_PROTOCOL_LEVELS } from "./conformance.js";
 import { protocolVersion } from "./envelope.js";
 import { AkashikError } from "./errors.js";
 import { deregisterEvent, recordEvent, registerEvent, statusChangeEvent } from "./events.js";
@@ -56,6 +57,11 @@ export function createField(options: FieldOptions = {}): Field {
   const clock = createLamportClock(-1);
   let hydrated = false;
   let zeroLengthWarned = false;
+
+  // Compose once at construction: protocol conformance levels plus whatever
+  // flags the adapter contributes. Neither changes during a field's
+  // lifetime, so this is computed once rather than per registration.
+  const fieldCapabilities: string[] = [...FIELD_PROTOCOL_LEVELS, ...(adapter.capabilities ?? [])];
 
   // Drafts stay private, in-memory, and never durable — mirrors v0.2 exactly.
   const drafts = new Map<string, FieldEntry>();
@@ -304,19 +310,24 @@ export function createField(options: FieldOptions = {}): Field {
     const existing = projection.sessions.get(input.id);
     if (existing) {
       return {
-        field_capabilities: [],
+        field_capabilities: [...fieldCapabilities], // copy — never hand out the internal array
         field_protocol_version: protocolVersion(),
         session_id: input.id,
       };
     }
 
-    // 3. New registration. register() never ticks the clock (v0.2 never
-    //    advanced its counter for register either), so this stamps whatever
-    //    the clock currently reads. Floored at 0: the clock starts at -1 so
-    //    the first entry-producing tick lands on 0, but a persisted event's
-    //    own lamport should never be negative.
+    // 3. New registration. Ticks the clock like every other event-producing
+    //    operation: two events from the same process (e.g. register then
+    //    deregister, or register then a later register from another agent)
+    //    must never share a lamport value, or their relative order becomes
+    //    undefined once replay()/buildProjection re-sorts by (lamport,
+    //    agent, event_id) — a real bug caught by exactly that scenario in
+    //    capabilities.test.ts. v0.2's epochCounter never advanced for
+    //    register, but that was a monotonic-counter-era shortcut; a real
+    //    Lamport clock has no such exemption, since v0.2 never had replay()
+    //    to expose the gap.
     const event = registerEvent({
-      lamport: Math.max(clock.current(), 0),
+      lamport: clock.tick(),
       agent: input.id,
       entry_id: input.id,
       role: input.role,
@@ -327,7 +338,7 @@ export function createField(options: FieldOptions = {}): Field {
     await ensureCurrent();
 
     return {
-      field_capabilities: [],
+      field_capabilities: [...fieldCapabilities], // copy — never hand out the internal array
       field_protocol_version: protocolVersion(),
       session_id: input.id,
     };
@@ -346,10 +357,10 @@ export function createField(options: FieldOptions = {}): Field {
 
     // 2. Idempotent: deregistering an unregistered agent is a no-op in effect
     //    (applyEvent's DEREGISTER case is a no-op on a missing session), but
-    //    the event is still appended for a durable audit trail.
-    // Floored at 0 for the same reason as register() above.
+    //    the event is still appended for a durable audit trail. Ticks the
+    //    clock for the same reason as register() above.
     const event = deregisterEvent({
-      lamport: Math.max(clock.current(), 0),
+      lamport: clock.tick(),
       agent: input.id,
       entry_id: input.id,
     });

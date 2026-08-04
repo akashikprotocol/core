@@ -2,6 +2,8 @@ export { createField } from "./field.js";
 export { createMemoryAdapter } from "./adapters/memory.js";
 export { AkashikError } from "./errors.js";
 export type { AkashikErrorCode } from "./errors.js";
+export { FIELD_PROTOCOL_LEVELS } from "./conformance.js";
+export type { ProtocolLevel } from "./conformance.js";
 export { EVENT_FORMAT_VERSION } from "./types.js";
 export type {
   AttuneContext,

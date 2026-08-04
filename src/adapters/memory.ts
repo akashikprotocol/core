@@ -12,6 +12,10 @@ export function createMemoryAdapter(): StorageAdapter {
   let nextSeq = 0;
 
   return {
+    // MemoryAdapter is not durable — state is lost on process exit.
+    // Declaring nothing is equivalent to declaring []; explicit is clearer.
+    capabilities: [],
+
     async append(events: FieldEvent[]): Promise<{ seqs: number[] }> {
       const seqs: number[] = [];
       for (const event of events) {
