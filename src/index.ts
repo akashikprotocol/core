@@ -27,6 +27,7 @@ export type {
   RegisterInput,
   RegisterResult,
   RelevanceReason,
+  ReplayQuery,
   RetractInput,
   StatusChangeEvent,
   StorageAdapter,

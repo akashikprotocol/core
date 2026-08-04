@@ -10,6 +10,8 @@ import { compareEventOrder } from "./ordering.js";
 import { applyEvent, emptyProjection } from "./projection.js";
 import type { Projection } from "./projection.js";
 import { computeRelevance } from "./relevance.js";
+import { filterReplay } from "./replay.js";
+import type { ReplayQuery } from "./replay.js";
 import type {
   AttuneContext,
   CommitInput,
@@ -592,6 +594,32 @@ export function createField(options: FieldOptions = {}): Field {
     return { entries: cappedEntries, conflicts };
   }
 
+  // replay — walk the append-only event log, filtered and optionally
+  // chain-resolved. Read-only: never mutates the log or the projection.
+  async function replay(query: ReplayQuery = {}): Promise<FieldEvent[]> {
+    await ensureCurrent();
+
+    // Push down what the adapter can filter efficiently; the rest is done
+    // here. entry_id and chain-following cannot be pushed down (they need
+    // the full set), so when entry_id is present we read unscoped.
+    const canPushDown = query.entry_id === undefined;
+
+    const events = await adapter.readEvents(
+      canPushDown
+        ? {
+            scope: {
+              ...(query.topic !== undefined ? { topic: query.topic } : {}),
+              ...(query.agent !== undefined ? { agent: query.agent } : {}),
+            },
+            ...(query.sinceSeq !== undefined ? { sinceSeq: query.sinceSeq } : {}),
+          }
+        : {},
+    );
+
+    const ordered = [...events].sort(compareEventOrder);
+    return filterReplay(ordered, query);
+  }
+
   return {
     write,
     read,
@@ -604,6 +632,7 @@ export function createField(options: FieldOptions = {}): Field {
     retract,
     supersede,
     reckon,
+    replay,
   };
 }
 

@@ -4,6 +4,7 @@ import type { Projection } from "./projection.js";
 /** Restricts reads to a subset of the log. */
 export type EventScope = {
   topic?: string;
+  agent?: string; // NEW in Story 2
 };
 
 /**

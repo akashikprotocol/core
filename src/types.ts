@@ -1,4 +1,6 @@
 import type { StorageAdapter } from "./adapter.js";
+import type { FieldEvent } from "./events.js";
+import type { ReplayQuery } from "./replay.js";
 
 /** Options passed to createField(). */
 export type FieldOptions = {
@@ -155,6 +157,9 @@ export { EVENT_FORMAT_VERSION } from "./events.js";
 export type { Projection } from "./projection.js";
 export type { EventScope, StorageAdapter } from "./adapter.js";
 
+// v0.3 — event log + REPLAY (Story 2). Additive re-export only.
+export type { ReplayQuery } from "./replay.js";
+
 /** Result of field.reckon() — Story 7. */
 export type ReckonResult = {
   entries: FieldEntryWithRelevance[];
@@ -174,6 +179,7 @@ export type Field = {
   retract(input: RetractInput): Promise<void>;
   supersede(input: SupersedeInput): Promise<SupersedeResult>;
   reckon(context: AttuneContext): Promise<ReckonResult>;
+  replay(query?: ReplayQuery): Promise<FieldEvent[]>; // NEW in Story 2
 };
 
 // Bring Conflict into scope for use in ReckonResult above.

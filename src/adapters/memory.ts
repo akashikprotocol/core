@@ -43,6 +43,13 @@ export function createMemoryAdapter(): StorageAdapter {
         });
       }
 
+      if (options?.scope?.agent !== undefined) {
+        const agent = options.scope.agent;
+        // Unlike topic, agent filtering applies to every event type — every
+        // event carries `agent`, so there is no "pass through" case here.
+        result = result.filter((e) => e.agent === agent);
+      }
+
       return [...result]; // copy; never hand out the internal array
     },
 
