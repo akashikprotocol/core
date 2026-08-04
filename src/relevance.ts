@@ -1,4 +1,11 @@
-import type { AttuneContext, FieldEntry, RelevanceReason, Session } from "./types.js";
+import type { AttuneContext, FieldEntry, RelevanceReason } from "./types.js";
+
+/**
+ * The slice of session state relevance scoring needs. Deliberately narrower
+ * than the internal `Session` record — only `role` is read here, so any
+ * session-shaped value (including a full `Session`) satisfies this.
+ */
+export type RelevanceSession = { role: string };
 
 /** Field state needed by the scoring algorithm. */
 export type RelevanceContext = {
@@ -7,10 +14,10 @@ export type RelevanceContext = {
   visibleEntries: FieldEntry[];
   /** The session for the entry's writing agent, if any.
    *  Null if the writer didn't register. */
-  writerSession: Session | null;
+  writerSession: RelevanceSession | null;
   /** The session for the calling agent, if any.
    *  Null if the caller didn't register. */
-  callerSession: Session | null;
+  callerSession: RelevanceSession | null;
 };
 
 /** Compute a relevance score and reason for a single entry. */

@@ -1,7 +1,11 @@
+import type { StorageAdapter } from "./adapter.js";
+
 /** Options passed to createField(). */
 export type FieldOptions = {
   /** Minimum length for the intent string, after trimming. Default: 10. */
   minIntentLength?: number;
+  /** Storage backend. Defaults to an in-memory MemoryAdapter. NEW in v0.3. */
+  adapter?: StorageAdapter;
 };
 
 /** Input shape for field.write(). */

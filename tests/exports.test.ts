@@ -4,11 +4,20 @@ import * as akashik from "../src/index.js";
 describe("public exports — runtime", () => {
   it("exports exactly the documented surface — no more, no less", () => {
     const exportedKeys = Object.keys(akashik).sort();
-    expect(exportedKeys).toEqual(["AkashikError", "EVENT_FORMAT_VERSION", "createField"]);
+    expect(exportedKeys).toEqual([
+      "AkashikError",
+      "EVENT_FORMAT_VERSION",
+      "createField",
+      "createMemoryAdapter",
+    ]);
   });
 
   it("createField is a function", () => {
     expect(typeof akashik.createField).toBe("function");
+  });
+
+  it("createMemoryAdapter is a function", () => {
+    expect(typeof akashik.createMemoryAdapter).toBe("function");
   });
 
   it("EVENT_FORMAT_VERSION is 1", () => {

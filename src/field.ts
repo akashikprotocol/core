@@ -1,7 +1,14 @@
+import type { StorageAdapter } from "./adapter.js";
+import { createMemoryAdapter } from "./adapters/memory.js";
 import { findConflicts } from "./conflicts.js";
-import { protocolVersion, unwrap, wrap } from "./envelope.js";
+import { protocolVersion } from "./envelope.js";
 import { AkashikError } from "./errors.js";
+import { deregisterEvent, recordEvent, registerEvent, statusChangeEvent } from "./events.js";
+import type { FieldEvent } from "./events.js";
 import { generateId } from "./id.js";
+import { compareEventOrder } from "./ordering.js";
+import { applyEvent, emptyProjection } from "./projection.js";
+import type { Projection } from "./projection.js";
 import { computeRelevance } from "./relevance.js";
 import type {
   AttuneContext,
@@ -19,7 +26,6 @@ import type {
   RegisterInput,
   RegisterResult,
   RetractInput,
-  Session,
   SupersedeInput,
   SupersedeResult,
   WriteInput,
@@ -33,19 +39,56 @@ const DEFAULT_MIN_INTENT_LENGTH = 10;
 // ── public API ───────────────────────────────────────────────────────────────
 
 export function createField(options: FieldOptions = {}): Field {
+  const adapter: StorageAdapter = options.adapter ?? createMemoryAdapter();
   const minIntentLength = options.minIntentLength ?? DEFAULT_MIN_INTENT_LENGTH;
-  const entries: FieldEntry[] = [];
+
+  // The projection is the source of truth, derived from the adapter's log.
+  // It is NEVER written to directly — only ever through applyEvent.
+  let projection: Projection = emptyProjection();
+  let lamport = 0; // v0.3 Story 1: simple increment. Story 3 adds the max-plus-one rule.
+  let hydrated = false;
   let zeroLengthWarned = false;
-  let epochCounter = 0;
 
-  // Story 2: session tracking
-  const sessions = new Map<string, Session>();
-
-  // Story 5: draft storage (keyed by draft id)
+  // Drafts stay private, in-memory, and never durable — mirrors v0.2 exactly.
   const drafts = new Map<string, FieldEntry>();
 
-  // Story 6: supersession tracking (predecessor id → superseding entry id)
+  // Supersession chain (predecessor id → superseding entry id). Rebuilt as
+  // RECORD events carrying `supersedes` are applied, so it stays correct
+  // across a projection catch-up, not just within a single supersede() call.
   const supersededBy = new Map<string, string>();
+
+  // Apply one already-seq-stamped event to the local projection, advancing
+  // lamport and the chain index. Every append path funnels through this, so
+  // the projection, the lamport clock, and the chain index never drift apart.
+  function applyLocally(event: FieldEvent): void {
+    applyEvent(projection, event);
+    lamport = Math.max(lamport, event.lamport);
+    if (event.type === "RECORD" && event.supersedes !== undefined) {
+      supersededBy.set(event.supersedes, event.entry_id);
+    }
+  }
+
+  /**
+   * Bring the local projection up to date with the adapter. A no-op after the
+   * first call for a single-process MemoryAdapter, but it is the seam that
+   * persistent and multi-process adapters depend on. Kept in every path.
+   */
+  async function ensureCurrent(): Promise<void> {
+    if (!hydrated) {
+      const loaded = await adapter.loadProjection();
+      if (loaded) {
+        projection = loaded;
+        lamport = Math.max(lamport, loaded.maxLamport);
+      }
+      hydrated = true;
+    }
+    const missed = await adapter.readEvents({ sinceSeq: projection.upToSeq });
+    if (missed.length > 0) {
+      for (const event of [...missed].sort(compareEventOrder)) {
+        applyLocally(event);
+      }
+    }
+  }
 
   // write — store an entry with mandatory intent
   async function write(input: WriteInput): Promise<WriteResult> {
@@ -86,32 +129,21 @@ export function createField(options: FieldOptions = {}): Field {
       );
     }
 
-    // 4. Construct the envelope around this operation (defensive validate).
-    const message = wrap({
-      type: "RECORD",
-      sender: input.agent ?? "",
-      epoch: epochCounter,
-      payload: {
-        entry: input.entry,
-        intent: input.intent,
-      },
-    });
-    unwrap(message);
+    // 4. Bring the projection current, then append and apply.
+    await ensureCurrent();
 
-    // 5. Construct the FieldEntry and store it.
-    const fieldEntry: FieldEntry = {
-      id: generateId(),
-      timestamp: Date.now(),
-      epoch: epochCounter++,
-      ...(input.agent !== undefined && { agent: input.agent }),
-      status: "committed",
+    const event = recordEvent({
+      lamport: lamport++,
+      agent: input.agent ?? null,
+      entry_id: generateId(),
       entry: input.entry,
       intent: input.intent,
-    };
+    });
 
-    entries.push(fieldEntry);
+    const { seqs } = await adapter.append([event]);
+    applyLocally({ ...event, seq: seqs[0] as number });
 
-    return { id: fieldEntry.id, timestamp: fieldEntry.timestamp };
+    return { id: event.entry_id, timestamp: event.wall_time };
   }
 
   // read — retrieve entries, optionally filtered by query
@@ -123,7 +155,9 @@ export function createField(options: FieldOptions = {}): Field {
       });
     }
 
-    // 2. Build candidate set: committed entries + caller's own drafts.
+    await ensureCurrent();
+
+    // 2. Build candidate set: committed/retracted/superseded entries + caller's own drafts.
     const caller = readOptions?.caller;
     const visibleDrafts: FieldEntry[] = [];
     if (caller !== undefined) {
@@ -133,7 +167,7 @@ export function createField(options: FieldOptions = {}): Field {
         }
       }
     }
-    const candidate = [...entries, ...visibleDrafts];
+    const candidate = [...projection.entries.values(), ...visibleDrafts];
 
     // 3. No query (or empty query) → return all candidates in write order.
     if (query === undefined || Object.keys(query).length === 0) {
@@ -147,21 +181,21 @@ export function createField(options: FieldOptions = {}): Field {
   // scopedView — the shared core of attune() and reckon().
   //
   // Both operations surface the same relevance-ranked, capped view of the
-  // field; reckon() simply runs conflict detection over the result. The only
-  // wire difference is the envelope `type`, passed in by the caller. Keeping
+  // field; reckon() simply runs conflict detection over the result. Keeping
   // this in one place guarantees attune and reckon never drift in visibility,
   // scoring, ordering, or truncation. Agent validation stays in each public
   // method so error messages name the operation the caller actually invoked.
-  function scopedView(
-    context: AttuneContext,
-    messageType: "ATTUNE" | "DETECT",
-  ): FieldEntryWithRelevance[] {
+  async function scopedView(context: AttuneContext): Promise<FieldEntryWithRelevance[]> {
+    await ensureCurrent();
+
     const { agent, topic } = context;
 
     // 1. Filter: exclude entries authored by the calling agent.
     //    Entries with no `agent` field are NOT excluded — they
     //    are treated as "not authored by the calling agent" per API.md.
-    let visible = entries.filter((fieldEntry) => fieldEntry.agent !== agent);
+    let visible = [...projection.entries.values()].filter(
+      (fieldEntry) => fieldEntry.agent !== agent,
+    );
 
     // 2. Apply topic filter if supplied.
     if (topic !== undefined) {
@@ -170,7 +204,7 @@ export function createField(options: FieldOptions = {}): Field {
 
     // 3. Filter by status — only committed entries are visible to others.
     //    Retracted and superseded entries are excluded. Drafts of other agents
-    //    are already absent (they live in the drafts Map, not entries).
+    //    are already absent (they live in the drafts Map, not the projection).
     visible = visible.filter((fieldEntry) => fieldEntry.status === "committed");
 
     // 4. Include the calling agent's own drafts (private scratchpad).
@@ -182,30 +216,16 @@ export function createField(options: FieldOptions = {}): Field {
       }
     }
 
-    // 5. Construct the envelope around this operation (defensive validate).
-    const message = wrap({
-      type: messageType,
-      sender: agent,
-      epoch: epochCounter,
-      payload: {
-        agent,
-        ...(context.role !== undefined && { role: context.role }),
-        ...(topic !== undefined && { topic }),
-        ...(context.max_units !== undefined && { max_units: context.max_units }),
-      },
-    });
-    unwrap(message);
-
-    // 6. Validate max_units before scoring.
+    // 5. Validate max_units before scoring.
     const limit = context.max_units ?? 100;
     if (limit < 0) {
       throw new AkashikError("INVALID_QUERY", "max_units must be non-negative");
     }
 
-    // 7. Score every visible entry and sort by relevance descending, epoch descending.
-    const callerSession = sessions.get(agent) ?? null;
+    // 6. Score every visible entry and sort by relevance descending, epoch descending.
+    const callerSession = projection.sessions.get(agent) ?? null;
     const scored: FieldEntryWithRelevance[] = visible.map((entry) => {
-      const writerSession = entry.agent ? (sessions.get(entry.agent) ?? null) : null;
+      const writerSession = entry.agent ? (projection.sessions.get(entry.agent) ?? null) : null;
       const { score, reason } = computeRelevance(entry, context, {
         visibleEntries: visible,
         writerSession,
@@ -221,7 +241,7 @@ export function createField(options: FieldOptions = {}): Field {
       return b.epoch - a.epoch;
     });
 
-    // 8. Apply max_units cap (drop lowest-relevance entries first).
+    // 7. Apply max_units cap (drop lowest-relevance entries first).
     return scored.slice(0, limit);
   }
 
@@ -238,61 +258,40 @@ export function createField(options: FieldOptions = {}): Field {
       throw new AkashikError("AGENT_REQUIRED", "attune() requires a non-empty agent identifier");
     }
 
-    return scopedView(context, "ATTUNE");
+    return scopedView(context);
   }
 
   async function register(input: RegisterInput): Promise<RegisterResult> {
     // 1. Validate input.
     validateRegisterInput(input);
+    await ensureCurrent();
 
-    // 2. Idempotent: same id returns the existing session if already registered.
-    const existing = sessions.get(input.id);
+    // 2. Idempotent: same id returns the existing session unchanged. No event
+    //    is appended — v0.2 never updated role/capabilities on re-registration.
+    const existing = projection.sessions.get(input.id);
     if (existing) {
-      const message = wrap({
-        type: "REGISTER",
-        sender: input.id,
-        epoch: epochCounter,
-        payload: {
-          id: input.id,
-          role: existing.role,
-          capabilities: existing.capabilities,
-        },
-      });
-      unwrap(message);
       return {
         field_capabilities: [],
         field_protocol_version: protocolVersion(),
-        session_id: existing.id,
+        session_id: input.id,
       };
     }
 
-    // 3. New registration. Create the session.
-    const session: Session = {
-      id: input.id,
+    // 3. New registration.
+    const event = registerEvent({
+      lamport,
+      agent: input.id,
+      entry_id: input.id,
       role: input.role,
       capabilities: input.capabilities ?? [],
-      registered_at: Date.now(),
-    };
-    sessions.set(input.id, session);
-
-    // 4. Wrap the operation in an envelope.
-    const message = wrap({
-      type: "REGISTER",
-      sender: input.id,
-      epoch: epochCounter,
-      payload: {
-        id: input.id,
-        role: input.role,
-        capabilities: input.capabilities ?? [],
-      },
     });
-    unwrap(message);
+    const { seqs } = await adapter.append([event]);
+    applyLocally({ ...event, seq: seqs[0] as number });
 
-    // 5. Return capability exchange result.
     return {
       field_capabilities: [],
       field_protocol_version: protocolVersion(),
-      session_id: session.id,
+      session_id: input.id,
     };
   }
 
@@ -305,19 +304,16 @@ export function createField(options: FieldOptions = {}): Field {
       throw new AkashikError("AGENT_REQUIRED", "deregister() requires a non-empty id");
     }
 
-    // 2. Wrap the operation in an envelope.
-    const message = wrap({
-      type: "DEREGISTER",
-      sender: input.id,
-      epoch: epochCounter,
-      payload: { id: input.id },
-    });
-    unwrap(message);
+    await ensureCurrent();
 
-    // 3. Idempotent: deregistering an unregistered agent is a no-op.
-    sessions.delete(input.id);
+    // 2. Idempotent: deregistering an unregistered agent is a no-op in effect
+    //    (applyEvent's DEREGISTER case is a no-op on a missing session), but
+    //    the event is still appended for a durable audit trail.
+    const event = deregisterEvent({ lamport, agent: input.id, entry_id: input.id });
+    const { seqs } = await adapter.append([event]);
+    applyLocally({ ...event, seq: seqs[0] as number });
 
-    // 4. Drafts owned by this agent persist beyond DEREGISTER (Story 5 concern).
+    // 3. Drafts owned by this agent persist beyond DEREGISTER (Story 5 concern).
   }
 
   async function draft(input: DraftInput): Promise<{ draft_id: string }> {
@@ -345,28 +341,22 @@ export function createField(options: FieldOptions = {}): Field {
       );
     }
 
-    // 2. Generate the entry with status "draft".
-    const epoch = epochCounter++;
+    await ensureCurrent();
+
+    // 2. Generate the entry with status "draft". Reserves its own lamport
+    //    tick (so a later commit always gets a strictly higher one) but is
+    //    kept private — never appended as an event until commit or discard.
     const newEntry: FieldEntry = {
       id: generateId(),
       timestamp: Date.now(),
-      epoch,
+      epoch: lamport++,
       ...(input.agent !== undefined && { agent: input.agent }),
       status: "draft",
       entry: input.entry,
       intent: input.intent,
     };
 
-    // 3. Envelope wrap.
-    const message = wrap({
-      type: "DRAFT",
-      sender: input.agent ?? "",
-      epoch,
-      payload: { entry: input.entry, intent: input.intent },
-    });
-    unwrap(message);
-
-    // 4. Store in drafts Map.
+    // 3. Store in the private drafts Map.
     drafts.set(newEntry.id, newEntry);
 
     return { draft_id: newEntry.id };
@@ -378,36 +368,29 @@ export function createField(options: FieldOptions = {}): Field {
       throw new AkashikError("DRAFT_NOT_FOUND", "commit() requires a non-empty draft_id");
     }
 
+    await ensureCurrent();
+
     // 2. Locate draft.
     const draftEntry = drafts.get(input.draft_id);
     if (!draftEntry) {
       throw new AkashikError("DRAFT_NOT_FOUND", `no draft found with id: ${input.draft_id}`);
     }
 
-    // 3. Promote: status → committed, epoch and timestamp updated. Id preserved.
-    const newEpoch = epochCounter++;
-    const newTimestamp = Date.now();
-    const committed: FieldEntry = {
-      ...draftEntry,
-      status: "committed",
-      epoch: newEpoch,
-      timestamp: newTimestamp,
-    };
-
-    // 4. Envelope wrap.
-    const message = wrap({
-      type: "COMMIT",
-      sender: draftEntry.agent ?? "",
-      epoch: newEpoch,
-      payload: { draft_id: input.draft_id, id: committed.id },
+    // 3. Promote: append a RECORD event under the draft's original id.
+    const event = recordEvent({
+      lamport: lamport++,
+      agent: draftEntry.agent ?? null,
+      entry_id: draftEntry.id,
+      entry: draftEntry.entry,
+      intent: draftEntry.intent,
     });
-    unwrap(message);
+    const { seqs } = await adapter.append([event]);
+    applyLocally({ ...event, seq: seqs[0] as number });
 
-    // 5. Move from drafts to entries.
+    // 4. Drop the private draft.
     drafts.delete(input.draft_id);
-    entries.push(committed);
 
-    return { id: committed.id, epoch: newEpoch, timestamp: newTimestamp };
+    return { id: event.entry_id, epoch: event.lamport, timestamp: event.wall_time };
   }
 
   async function discard(input: DiscardInput): Promise<void> {
@@ -415,6 +398,8 @@ export function createField(options: FieldOptions = {}): Field {
     if (!input || typeof input.draft_id !== "string" || input.draft_id.length === 0) {
       throw new AkashikError("DRAFT_NOT_FOUND", "discard() requires a non-empty draft_id");
     }
+
+    await ensureCurrent();
 
     // 2. Locate draft (before intent validation so DRAFT_NOT_FOUND takes precedence).
     const draftEntry = drafts.get(input.draft_id);
@@ -438,25 +423,31 @@ export function createField(options: FieldOptions = {}): Field {
       );
     }
 
-    // 4. Mark retracted; keep audit trail.
-    const retracted: FieldEntry = {
-      ...draftEntry,
-      status: "retracted",
+    // 4. A discarded draft was never durable. Establish it, then retract it,
+    //    as one atomic batch — the audit trail a v0.2 caller expects, built
+    //    from the two log event types that exist. Final intent is the
+    //    discard reason, mirroring v0.2's override of the original intent.
+    const recordEv = recordEvent({
+      lamport: lamport++,
+      agent: draftEntry.agent ?? null,
+      entry_id: draftEntry.id,
+      entry: draftEntry.entry,
       intent: input.intent,
-    };
-
-    // 5. Envelope wrap.
-    const message = wrap({
-      type: "DISCARD",
-      sender: input.agent ?? draftEntry.agent ?? "",
-      epoch: epochCounter,
-      payload: { draft_id: input.draft_id, intent: input.intent },
     });
-    unwrap(message);
+    const statusEv = statusChangeEvent({
+      lamport: lamport++,
+      agent: input.agent ?? draftEntry.agent ?? null,
+      entry_id: draftEntry.id,
+      new_status: "retracted",
+      intent: input.intent,
+    });
 
-    // 6. Move from drafts to entries (audit trail; filtered by status in attune).
+    const { seqs } = await adapter.append([recordEv, statusEv]);
+    applyLocally({ ...recordEv, seq: seqs[0] as number });
+    applyLocally({ ...statusEv, seq: seqs[1] as number });
+
+    // 5. Drop the private draft.
     drafts.delete(input.draft_id);
-    entries.push(retracted);
   }
 
   async function retract(input: RetractInput): Promise<void> {
@@ -477,8 +468,10 @@ export function createField(options: FieldOptions = {}): Field {
       );
     }
 
+    await ensureCurrent();
+
     // 2. Locate the entry.
-    const target = entries.find((e) => e.id === input.id);
+    const target = projection.entries.get(input.id);
     if (!target) {
       throw new AkashikError("ENTRY_NOT_FOUND", `no entry found with id: ${input.id}`);
     }
@@ -496,18 +489,16 @@ export function createField(options: FieldOptions = {}): Field {
       return;
     }
 
-    // 5. Envelope wrap.
-    const newEpoch = epochCounter++;
-    const message = wrap({
-      type: "RETRACT",
-      sender: input.agent,
-      epoch: newEpoch,
-      payload: { id: input.id, intent: input.intent },
+    // 5. Append and apply.
+    const event = statusChangeEvent({
+      lamport: lamport++,
+      agent: input.agent,
+      entry_id: input.id,
+      new_status: "retracted",
+      intent: input.intent,
     });
-    unwrap(message);
-
-    // 6. Mutate status in place (entry stays in array for audit).
-    target.status = "retracted";
+    const { seqs } = await adapter.append([event]);
+    applyLocally({ ...event, seq: seqs[0] as number });
   }
 
   async function supersede(input: SupersedeInput): Promise<SupersedeResult> {
@@ -531,8 +522,10 @@ export function createField(options: FieldOptions = {}): Field {
       );
     }
 
+    await ensureCurrent();
+
     // 2. Locate the targeted predecessor.
-    const targeted = entries.find((e) => e.id === input.superseding_id);
+    const targeted = projection.entries.get(input.superseding_id);
     if (!targeted) {
       throw new AkashikError("ENTRY_NOT_FOUND", `no entry found with id: ${input.superseding_id}`);
     }
@@ -547,7 +540,7 @@ export function createField(options: FieldOptions = {}): Field {
     while (supersededBy.has(actualPredecessorId)) {
       actualPredecessorId = supersededBy.get(actualPredecessorId) as string;
     }
-    const actualPredecessor = entries.find((e) => e.id === actualPredecessorId);
+    const actualPredecessor = projection.entries.get(actualPredecessorId);
     if (!actualPredecessor || actualPredecessor.status !== "committed") {
       throw new AkashikError(
         "ENTRY_NOT_FOUND",
@@ -555,40 +548,29 @@ export function createField(options: FieldOptions = {}): Field {
       );
     }
 
-    // 5. Create the new committed entry.
-    const newEpoch = epochCounter++;
-    const newTimestamp = Date.now();
-    const newEntry: FieldEntry = {
-      id: generateId(),
-      timestamp: newTimestamp,
-      epoch: newEpoch,
+    // 5. Two events in one atomic batch: mark the predecessor superseded,
+    //    then record the new entry, linked back via `supersedes`.
+    const markOld = statusChangeEvent({
+      lamport: lamport++,
       agent: input.agent,
-      status: "committed",
+      entry_id: actualPredecessorId,
+      new_status: "superseded",
+      intent: input.intent,
+    });
+    const newRecord = recordEvent({
+      lamport: lamport++,
+      agent: input.agent,
+      entry_id: generateId(),
       entry: input.entry,
       intent: input.intent,
-    };
-
-    // 6. Envelope wrap.
-    const message = wrap({
-      type: "SUPERSEDE",
-      sender: input.agent,
-      epoch: newEpoch,
-      payload: {
-        superseding_id: actualPredecessorId,
-        entry: input.entry,
-        intent: input.intent,
-      },
+      supersedes: actualPredecessorId,
     });
-    unwrap(message);
 
-    // 7. Mark actual predecessor superseded and record chain link.
-    actualPredecessor.status = "superseded";
-    supersededBy.set(actualPredecessorId, newEntry.id);
+    const { seqs } = await adapter.append([markOld, newRecord]);
+    applyLocally({ ...markOld, seq: seqs[0] as number });
+    applyLocally({ ...newRecord, seq: seqs[1] as number });
 
-    // 8. Add new entry.
-    entries.push(newEntry);
-
-    return { id: newEntry.id, epoch: newEpoch, timestamp: newTimestamp };
+    return { id: newRecord.entry_id, epoch: newRecord.lamport, timestamp: newRecord.wall_time };
   }
 
   async function reckon(context: AttuneContext): Promise<ReckonResult> {
@@ -604,7 +586,7 @@ export function createField(options: FieldOptions = {}): Field {
     }
 
     // reckon is attune plus conflict detection over the surfaced set.
-    const cappedEntries = scopedView(context, "DETECT");
+    const cappedEntries = await scopedView(context);
     const conflicts = findConflicts(cappedEntries);
 
     return { entries: cappedEntries, conflicts };
