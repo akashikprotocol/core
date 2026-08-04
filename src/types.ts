@@ -139,6 +139,18 @@ export type SupersedeResult = {
 // Re-export Conflict from the conflicts module so it's a first-class SDK type.
 export type { Conflict } from "./conflicts.js";
 
+// v0.3 — event-sourced foundation (Story 0). Additive re-exports only.
+export type {
+  DeregisterEvent,
+  FieldEvent,
+  RecordEvent,
+  RegisterEvent,
+  StatusChangeEvent,
+} from "./events.js";
+export { EVENT_FORMAT_VERSION } from "./events.js";
+export type { Projection } from "./projection.js";
+export type { EventScope, StorageAdapter } from "./adapter.js";
+
 /** Result of field.reckon() — Story 7. */
 export type ReckonResult = {
   entries: FieldEntryWithRelevance[];

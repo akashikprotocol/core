@@ -11,7 +11,7 @@ export type MessageType =
   | "RETRACT"
   | "SUPERSEDE"
   | "ATTUNE"
-  | "RECKON";
+  | "DETECT";
 
 export type Message = {
   id: string;
@@ -35,7 +35,7 @@ const VALID_MESSAGE_TYPES = new Set<MessageType>([
   "RETRACT",
   "SUPERSEDE",
   "ATTUNE",
-  "RECKON",
+  "DETECT",
 ]);
 
 /**

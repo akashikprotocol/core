@@ -154,7 +154,7 @@ export function createField(options: FieldOptions = {}): Field {
   // method so error messages name the operation the caller actually invoked.
   function scopedView(
     context: AttuneContext,
-    messageType: "ATTUNE" | "RECKON",
+    messageType: "ATTUNE" | "DETECT",
   ): FieldEntryWithRelevance[] {
     const { agent, topic } = context;
 
@@ -604,7 +604,7 @@ export function createField(options: FieldOptions = {}): Field {
     }
 
     // reckon is attune plus conflict detection over the surfaced set.
-    const cappedEntries = scopedView(context, "RECKON");
+    const cappedEntries = scopedView(context, "DETECT");
     const conflicts = findConflicts(cappedEntries);
 
     return { entries: cappedEntries, conflicts };

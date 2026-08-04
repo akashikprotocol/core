@@ -4,11 +4,15 @@ import * as akashik from "../src/index.js";
 describe("public exports — runtime", () => {
   it("exports exactly the documented surface — no more, no less", () => {
     const exportedKeys = Object.keys(akashik).sort();
-    expect(exportedKeys).toEqual(["AkashikError", "createField"]);
+    expect(exportedKeys).toEqual(["AkashikError", "EVENT_FORMAT_VERSION", "createField"]);
   });
 
   it("createField is a function", () => {
     expect(typeof akashik.createField).toBe("function");
+  });
+
+  it("EVENT_FORMAT_VERSION is 1", () => {
+    expect(akashik.EVENT_FORMAT_VERSION).toBe(1);
   });
 
   it("AkashikError is a class extending Error", () => {
@@ -72,20 +76,28 @@ describe("public exports — type surface (compile-time check)", () => {
       commitInput: import("../src/index.js").CommitInput;
       commitResult: import("../src/index.js").CommitResult;
       conflict: import("../src/index.js").Conflict;
+      deregisterEvent: import("../src/index.js").DeregisterEvent;
       discardInput: import("../src/index.js").DiscardInput;
       draftInput: import("../src/index.js").DraftInput;
+      eventScope: import("../src/index.js").EventScope;
       field: import("../src/index.js").Field;
       fieldEntry: import("../src/index.js").FieldEntry;
       fieldEntryStatus: import("../src/index.js").FieldEntryStatus;
       fieldEntryWithRelevance: import("../src/index.js").FieldEntryWithRelevance;
+      fieldEvent: import("../src/index.js").FieldEvent;
       fieldOptions: import("../src/index.js").FieldOptions;
+      projection: import("../src/index.js").Projection;
       readOptions: import("../src/index.js").ReadOptions;
       readQuery: import("../src/index.js").ReadQuery;
       reckonResult: import("../src/index.js").ReckonResult;
+      recordEvent: import("../src/index.js").RecordEvent;
+      registerEvent: import("../src/index.js").RegisterEvent;
       registerInput: import("../src/index.js").RegisterInput;
       registerResult: import("../src/index.js").RegisterResult;
       relevanceReason: import("../src/index.js").RelevanceReason;
       retractInput: import("../src/index.js").RetractInput;
+      statusChangeEvent: import("../src/index.js").StatusChangeEvent;
+      storageAdapter: import("../src/index.js").StorageAdapter;
       supersedeInput: import("../src/index.js").SupersedeInput;
       supersedeResult: import("../src/index.js").SupersedeResult;
       writeInput: import("../src/index.js").WriteInput;
