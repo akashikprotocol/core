@@ -96,6 +96,14 @@ export type AttuneContext = {
   role?: string; // NEW in Story 4: optional explicit role for scoring
   topic?: string;
   max_units?: number; // NEW in Story 4: cap on returned entries; default 100
+  /**
+   * Only surface entries with epoch strictly greater than this value. NEW in
+   * v0.3 Story 5. Enables polling: track the highest epoch seen and pass it
+   * on the next call. Note that attune surfaces only committed, visible
+   * entries — retractions cannot be communicated through polling. Use
+   * replay({ sinceSeq }) for a complete change history.
+   */
+  since_epoch?: number;
 };
 
 /** Input shape for field.register(). */

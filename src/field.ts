@@ -34,7 +34,7 @@ import type {
   WriteInput,
   WriteResult,
 } from "./types.js";
-import { validateConfidence } from "./validation.js";
+import { validateConfidence, validateSinceEpoch } from "./validation.js";
 
 // ── constants ────────────────────────────────────────────────────────────────
 
@@ -234,6 +234,19 @@ export function createField(options: FieldOptions = {}): Field {
           visible.push(draft);
         }
       }
+    }
+
+    // 4b. since_epoch: polling watermark. Strictly greater than, so a caller
+    // passing back the highest epoch it already received doesn't see it
+    // again. Filters the projection, not the event stream — since_epoch and
+    // the adapter's sinceSeq are different clocks (entry epoch vs. event
+    // storage position) and are never interchangeable. Applies uniformly to
+    // everything in `visible` at this point, including the caller's own
+    // drafts, since drafts carry a real epoch too.
+    validateSinceEpoch(context.since_epoch);
+    if (context.since_epoch !== undefined) {
+      const since = context.since_epoch;
+      visible = visible.filter((fieldEntry) => fieldEntry.epoch > since);
     }
 
     // 5. Validate max_units before scoring.

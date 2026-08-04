@@ -27,3 +27,19 @@ export function validateConfidence(confidence: unknown): void {
     throw new AkashikError("INVALID_CONFIDENCE", "confidence.reason must be a string when present");
   }
 }
+
+/**
+ * Validate an optional since_epoch watermark on AttuneContext. Absent is
+ * always valid. Reuses INVALID_QUERY, consistent with max_units validation.
+ */
+export function validateSinceEpoch(sinceEpoch: unknown): void {
+  if (sinceEpoch === undefined) return;
+
+  if (typeof sinceEpoch !== "number" || !Number.isInteger(sinceEpoch)) {
+    throw new AkashikError("INVALID_QUERY", "since_epoch must be an integer");
+  }
+
+  if (sinceEpoch < 0) {
+    throw new AkashikError("INVALID_QUERY", "since_epoch must be non-negative");
+  }
+}
