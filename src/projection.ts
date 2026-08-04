@@ -92,3 +92,41 @@ export function buildProjection(events: FieldEvent[]): Projection {
   for (const event of sorted) applyEvent(projection, event);
   return projection;
 }
+
+/**
+ * JSON-safe form of a Projection. Map does not survive JSON.stringify — its
+ * enumerable own properties are none, so it would serialize as `{}`. Adapters
+ * that persist snapshots (Story 7) round-trip through this shape instead.
+ */
+export type SerializedProjection = {
+  entries: [string, FieldEntry][];
+  sessions: [string, { role: string; capabilities: string[] }][];
+  upToSeq: number;
+  maxLamport: number;
+};
+
+/** Convert a Projection to its JSON-safe form. Pure; does not mutate. */
+export function serializeProjection(p: Projection): SerializedProjection {
+  return {
+    entries: [...p.entries.entries()],
+    sessions: [...p.sessions.entries()],
+    upToSeq: p.upToSeq,
+    maxLamport: p.maxLamport,
+  };
+}
+
+/**
+ * Reconstruct a Projection from its JSON-safe form. Pure. `raw` is `unknown`
+ * because it typically arrives from a JSON column or JSON.parse, neither of
+ * which the type system can vouch for — the adapter that wrote it is the
+ * only thing guaranteeing the shape matches.
+ */
+export function deserializeProjection(raw: unknown): Projection {
+  const s = raw as SerializedProjection;
+  return {
+    entries: new Map(s.entries),
+    sessions: new Map(s.sessions),
+    upToSeq: s.upToSeq,
+    maxLamport: s.maxLamport,
+  };
+}
