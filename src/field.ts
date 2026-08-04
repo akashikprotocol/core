@@ -1,5 +1,6 @@
 import type { StorageAdapter } from "./adapter.js";
 import { createMemoryAdapter } from "./adapters/memory.js";
+import { createLamportClock } from "./clock.js";
 import { findConflicts } from "./conflicts.js";
 import { protocolVersion } from "./envelope.js";
 import { AkashikError } from "./errors.js";
@@ -47,7 +48,11 @@ export function createField(options: FieldOptions = {}): Field {
   // The projection is the source of truth, derived from the adapter's log.
   // It is NEVER written to directly — only ever through applyEvent.
   let projection: Projection = emptyProjection();
-  let lamport = 0; // v0.3 Story 1: simple increment. Story 3 adds the max-plus-one rule.
+  // Initialised at -1, not 0: tick() pre-increments, so the first local event
+  // must land on 0 to match the epoch numbering shipped since v0.2/Story 1.
+  // All clock manipulation goes through tick()/observe() — never a bare
+  // increment — so the send and receive rules stay in exactly one place.
+  const clock = createLamportClock(-1);
   let hydrated = false;
   let zeroLengthWarned = false;
 
@@ -60,11 +65,11 @@ export function createField(options: FieldOptions = {}): Field {
   const supersededBy = new Map<string, string>();
 
   // Apply one already-seq-stamped event to the local projection, advancing
-  // lamport and the chain index. Every append path funnels through this, so
-  // the projection, the lamport clock, and the chain index never drift apart.
+  // the clock and the chain index. Every append path funnels through this,
+  // so the projection, the clock, and the chain index never drift apart.
   function applyLocally(event: FieldEvent): void {
     applyEvent(projection, event);
-    lamport = Math.max(lamport, event.lamport);
+    clock.observe(event.lamport); // receive rule, on every event applied
     if (event.type === "RECORD" && event.supersedes !== undefined) {
       supersededBy.set(event.supersedes, event.entry_id);
     }
@@ -73,14 +78,16 @@ export function createField(options: FieldOptions = {}): Field {
   /**
    * Bring the local projection up to date with the adapter. A no-op after the
    * first call for a single-process MemoryAdapter, but it is the seam that
-   * persistent and multi-process adapters depend on. Kept in every path.
+   * persistent and multi-process adapters depend on. Kept in every path,
+   * and run before every clock.tick() call site so the receive rule always
+   * completes before the send rule.
    */
   async function ensureCurrent(): Promise<void> {
     if (!hydrated) {
       const loaded = await adapter.loadProjection();
       if (loaded) {
         projection = loaded;
-        lamport = Math.max(lamport, loaded.maxLamport);
+        clock.observe(loaded.maxLamport); // receive rule, on snapshot load
       }
       hydrated = true;
     }
@@ -135,15 +142,21 @@ export function createField(options: FieldOptions = {}): Field {
     await ensureCurrent();
 
     const event = recordEvent({
-      lamport: lamport++,
+      lamport: clock.tick(),
       agent: input.agent ?? null,
       entry_id: generateId(),
       entry: input.entry,
       intent: input.intent,
     });
 
-    const { seqs } = await adapter.append([event]);
-    applyLocally({ ...event, seq: seqs[0] as number });
+    // Re-catch-up after append rather than applying `event` directly: under
+    // concurrent access another process may have claimed a lower seq that
+    // this field hasn't read yet. Jumping straight to our own (possibly
+    // higher) seq would permanently skip it — sinceSeq only ever looks
+    // forward. Reading from the adapter again picks up everything in order,
+    // our own event included.
+    await adapter.append([event]);
+    await ensureCurrent();
 
     return { id: event.entry_id, timestamp: event.wall_time };
   }
@@ -279,16 +292,21 @@ export function createField(options: FieldOptions = {}): Field {
       };
     }
 
-    // 3. New registration.
+    // 3. New registration. register() never ticks the clock (v0.2 never
+    //    advanced its counter for register either), so this stamps whatever
+    //    the clock currently reads. Floored at 0: the clock starts at -1 so
+    //    the first entry-producing tick lands on 0, but a persisted event's
+    //    own lamport should never be negative.
     const event = registerEvent({
-      lamport,
+      lamport: Math.max(clock.current(), 0),
       agent: input.id,
       entry_id: input.id,
       role: input.role,
       capabilities: input.capabilities ?? [],
     });
-    const { seqs } = await adapter.append([event]);
-    applyLocally({ ...event, seq: seqs[0] as number });
+    // See write() for why this re-catches-up instead of applying directly.
+    await adapter.append([event]);
+    await ensureCurrent();
 
     return {
       field_capabilities: [],
@@ -311,9 +329,15 @@ export function createField(options: FieldOptions = {}): Field {
     // 2. Idempotent: deregistering an unregistered agent is a no-op in effect
     //    (applyEvent's DEREGISTER case is a no-op on a missing session), but
     //    the event is still appended for a durable audit trail.
-    const event = deregisterEvent({ lamport, agent: input.id, entry_id: input.id });
-    const { seqs } = await adapter.append([event]);
-    applyLocally({ ...event, seq: seqs[0] as number });
+    // Floored at 0 for the same reason as register() above.
+    const event = deregisterEvent({
+      lamport: Math.max(clock.current(), 0),
+      agent: input.id,
+      entry_id: input.id,
+    });
+    // See write() for why this re-catches-up instead of applying directly.
+    await adapter.append([event]);
+    await ensureCurrent();
 
     // 3. Drafts owned by this agent persist beyond DEREGISTER (Story 5 concern).
   }
@@ -345,13 +369,13 @@ export function createField(options: FieldOptions = {}): Field {
 
     await ensureCurrent();
 
-    // 2. Generate the entry with status "draft". Reserves its own lamport
+    // 2. Generate the entry with status "draft". Reserves its own clock
     //    tick (so a later commit always gets a strictly higher one) but is
     //    kept private — never appended as an event until commit or discard.
     const newEntry: FieldEntry = {
       id: generateId(),
       timestamp: Date.now(),
-      epoch: lamport++,
+      epoch: clock.tick(),
       ...(input.agent !== undefined && { agent: input.agent }),
       status: "draft",
       entry: input.entry,
@@ -380,14 +404,15 @@ export function createField(options: FieldOptions = {}): Field {
 
     // 3. Promote: append a RECORD event under the draft's original id.
     const event = recordEvent({
-      lamport: lamport++,
+      lamport: clock.tick(),
       agent: draftEntry.agent ?? null,
       entry_id: draftEntry.id,
       entry: draftEntry.entry,
       intent: draftEntry.intent,
     });
-    const { seqs } = await adapter.append([event]);
-    applyLocally({ ...event, seq: seqs[0] as number });
+    // See write() for why this re-catches-up instead of applying directly.
+    await adapter.append([event]);
+    await ensureCurrent();
 
     // 4. Drop the private draft.
     drafts.delete(input.draft_id);
@@ -430,23 +455,23 @@ export function createField(options: FieldOptions = {}): Field {
     //    from the two log event types that exist. Final intent is the
     //    discard reason, mirroring v0.2's override of the original intent.
     const recordEv = recordEvent({
-      lamport: lamport++,
+      lamport: clock.tick(),
       agent: draftEntry.agent ?? null,
       entry_id: draftEntry.id,
       entry: draftEntry.entry,
       intent: input.intent,
     });
     const statusEv = statusChangeEvent({
-      lamport: lamport++,
+      lamport: clock.tick(),
       agent: input.agent ?? draftEntry.agent ?? null,
       entry_id: draftEntry.id,
       new_status: "retracted",
       intent: input.intent,
     });
 
-    const { seqs } = await adapter.append([recordEv, statusEv]);
-    applyLocally({ ...recordEv, seq: seqs[0] as number });
-    applyLocally({ ...statusEv, seq: seqs[1] as number });
+    // See write() for why this re-catches-up instead of applying directly.
+    await adapter.append([recordEv, statusEv]);
+    await ensureCurrent();
 
     // 5. Drop the private draft.
     drafts.delete(input.draft_id);
@@ -493,14 +518,15 @@ export function createField(options: FieldOptions = {}): Field {
 
     // 5. Append and apply.
     const event = statusChangeEvent({
-      lamport: lamport++,
+      lamport: clock.tick(),
       agent: input.agent,
       entry_id: input.id,
       new_status: "retracted",
       intent: input.intent,
     });
-    const { seqs } = await adapter.append([event]);
-    applyLocally({ ...event, seq: seqs[0] as number });
+    // See write() for why this re-catches-up instead of applying directly.
+    await adapter.append([event]);
+    await ensureCurrent();
   }
 
   async function supersede(input: SupersedeInput): Promise<SupersedeResult> {
@@ -553,14 +579,14 @@ export function createField(options: FieldOptions = {}): Field {
     // 5. Two events in one atomic batch: mark the predecessor superseded,
     //    then record the new entry, linked back via `supersedes`.
     const markOld = statusChangeEvent({
-      lamport: lamport++,
+      lamport: clock.tick(),
       agent: input.agent,
       entry_id: actualPredecessorId,
       new_status: "superseded",
       intent: input.intent,
     });
     const newRecord = recordEvent({
-      lamport: lamport++,
+      lamport: clock.tick(),
       agent: input.agent,
       entry_id: generateId(),
       entry: input.entry,
@@ -568,9 +594,9 @@ export function createField(options: FieldOptions = {}): Field {
       supersedes: actualPredecessorId,
     });
 
-    const { seqs } = await adapter.append([markOld, newRecord]);
-    applyLocally({ ...markOld, seq: seqs[0] as number });
-    applyLocally({ ...newRecord, seq: seqs[1] as number });
+    // See write() for why this re-catches-up instead of applying directly.
+    await adapter.append([markOld, newRecord]);
+    await ensureCurrent();
 
     return { id: newRecord.entry_id, epoch: newRecord.lamport, timestamp: newRecord.wall_time };
   }
