@@ -36,6 +36,7 @@
     "example:conflict": "tsx examples/conflict.ts",
     "example:showcase": "tsx examples/protocol-showcase.ts",
     "example:replay": "tsx examples/replay.ts",
+    "example:postgres": "tsx examples/postgres.ts",
     "prepublishOnly": "npm run lint && npm run typecheck && npm run test && npm run build"
   },
   "dependencies": {
