@@ -17,6 +17,11 @@
       "types": "./dist/postgres.d.ts",
       "import": "./dist/postgres.js",
       "require": "./dist/postgres.cjs"
+    },
+    "./file": {
+      "types": "./dist/file.d.ts",
+      "import": "./dist/file.js",
+      "require": "./dist/file.cjs"
     }
   },
   "files": ["dist", "LICENSE", "README.md"],
