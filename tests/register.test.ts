@@ -34,10 +34,11 @@ describe("field.register() — happy path", () => {
     expect(result.session_id).toBe("researcher-1");
   });
 
-  it("field_capabilities is always an empty array in v0.2", async () => {
+  it("field_capabilities advertises the conformance levels the field satisfies", async () => {
     const field = createField();
     const result = await field.register({ id: "agent", role: "writer" });
-    expect(result.field_capabilities).toEqual([]);
+    expect(result.field_capabilities).toContain("L0");
+    expect(result.field_capabilities).toContain("L1");
   });
 
   it("accepts capabilities as empty array", async () => {
