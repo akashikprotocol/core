@@ -1,6 +1,6 @@
 {
   "name": "@akashikprotocol/core",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "The reference SDK for the Akashik Protocol — shared memory and coordination for multi-agent AI systems.",
   "license": "Apache-2.0",
   "type": "module",
@@ -41,6 +41,7 @@
     "example:conflict": "tsx examples/conflict.ts",
     "example:showcase": "tsx examples/protocol-showcase.ts",
     "example:replay": "tsx examples/replay.ts",
+    "example:persistence": "tsx examples/persistence.ts",
     "example:postgres": "tsx examples/postgres.ts",
     "prepublishOnly": "npm run lint && npm run typecheck && npm run test && npm run build"
   },

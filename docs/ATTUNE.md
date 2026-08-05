@@ -12,11 +12,11 @@ The other two primitives are table-stakes. Most memory systems have something li
 
 `attune` is opinionated: *I am this agent, I am thinking about this topic, what should I be paying attention to*. The caller asks for relevance; the field decides what relevance means.
 
-The difference matters because most agent systems built today don't have an answer to "what should this agent attend to right now". They search keywords. They retrieve by similarity score. They feed everything in and hope the model figures it out. Each of those is a workaround for the missing primitive.
+The difference matters because most agent systems built today do not have an answer to "what should this agent attend to right now". They search keywords. They retrieve by similarity score. They feed everything in and hope the model figures it out. Each of those is a workaround for the missing primitive.
 
-## What attune does in v0.2
+## What attune does
 
-`attune` now runs a four-component relevance scoring pass, sorts by score, and optionally truncates the result:
+`attune` runs a four-component relevance scoring pass, sorts by score, and optionally truncates the result:
 
 > Entries not authored by the calling agent, optionally filtered by topic, scored by relevance, sorted highest-first, capped by max_units.
 
@@ -36,32 +36,77 @@ The interface is `attune(context: AttuneContext)`:
 ```typescript
 const entries = await field.attune({
   agent: "writer",
-  topic: "competitor-pricing",   // optional — filters and boosts topic score
-  role: "researcher",            // optional — explicit role for scoring
-  max_units: 5,                  // optional — cap on returned entries (default 100)
+  topic: "competitor-pricing",   // optional, filters and boosts topic score
+  role: "researcher",            // optional, explicit role for scoring
+  max_units: 5,                  // optional, cap on returned entries (default 100)
+  since_epoch: 12,               // optional, polling watermark (see below)
 });
 
 entries[0].relevance_score   // 0.0 to 1.0
 entries[0].relevance_reason  // { components: { topic, role, recency, intent }, summary }
+entries[0].confidence        // present if the writer supplied it; never affects scoring
 ```
 
 ## Tuning the result
 
-**`topic`** — When provided, attune filters to entries whose `entry.topic` matches exactly AND adds the full topic weight (0.6) to their score. When omitted, attune scans the full field and only scores on the other three components.
+**`topic`**. When provided, attune filters to entries whose `entry.topic` matches exactly and adds the full topic weight (0.6) to their score. When omitted, attune scans the full field and only scores on the other three components.
 
-**`role`** — When provided, attune uses this role for the role-match scoring instead of (or in addition to) the calling agent's registered session role. Useful for agents calling attune without prior registration, or for agents temporarily adopting a different scoring perspective.
+**`role`**. When provided, attune uses this role for the role-match scoring instead of, or in addition to, the calling agent's registered session role. Useful for agents calling attune without prior registration, or for agents temporarily adopting a different scoring perspective.
 
-**`max_units`** — When provided, only the top N entries by score are returned. Entries beyond the cap are dropped (lowest-relevance first). Negative values throw `INVALID_QUERY`. Zero returns an empty array. Defaults to 100.
+**`max_units`**. When provided, only the top N entries by score are returned. Entries beyond the cap are dropped, lowest-relevance first. Negative values throw `INVALID_QUERY`. Zero returns an empty array. Defaults to 100.
+
+## Polling with since_epoch
+
+`since_epoch` turns `attune` into a subscription built without a transport. Pass the highest epoch you have already seen, and only entries with a strictly greater epoch come back.
+
+```typescript
+let watermark: number | undefined;
+
+async function poll() {
+  const entries = await field.attune({
+    agent: "writer",
+    topic: "competitor-pricing",
+    since_epoch: watermark,
+  });
+
+  for (const entry of entries) {
+    handle(entry);
+    watermark = Math.max(watermark ?? -1, entry.epoch);
+  }
+}
+```
+
+Filtering is strictly greater than, never greater-or-equal, so a caller passing back the highest epoch it already received never sees that entry a second time. An empty result correctly leaves the watermark unchanged: nothing new arrived, so the next poll asks from the same point.
+
+Epoch numbering starts at 0, and `since_epoch` must be non-negative, so there is no numeric watermark that means "everything from the start". The first poll should omit `since_epoch` entirely; only later polls carry a watermark derived from what the previous call actually returned.
+
+No watermark is returned by the protocol. Adding one would change `attune`'s return shape from an array to an object, which is a breaking change to a published surface. The caller always derives the next watermark from the epochs on the entries it received.
+
+### The max_units hazard
+
+> **Warning.** `max_units` truncates by relevance, not by epoch. If more entries arrive between polls than `max_units` permits, the caller receives the N most relevant among them, whose epochs are scattered across the range. Advancing the watermark to the highest epoch among those N silently skips whichever entries did not make the cut.
+>
+> `attune` is a relevance ranking; that is its identity, and reordering it under a polling flag would make the method mean two different things depending on which arguments were passed. There is no special case here to opt out of.
+>
+> Poll frequently enough that the arrival rate between polls stays below `max_units`, or use `replay({ sinceSeq })` for complete, unranked, chronological coverage instead. See [REPLAY.md](./REPLAY.md).
+
+### What polling cannot communicate
+
+`attune` surfaces only committed, visible entries. That is true whether or not `since_epoch` is present, and it has a direct consequence for polling: a retraction is never communicated through `attune`. A retracted entry simply stops appearing; a poller holding an incremental view never learns it was withdrawn, because `attune` has nothing to return for something that is no longer visible.
+
+This is not a gap to be closed. `attune` answers "what should I be aware of right now", not "what changed". A caller that needs to know about retractions, not just new arrivals, needs `replay({ sinceSeq })`, which surfaces `STATUS_CHANGE` events directly and already works today.
 
 ## What you do and don't see
 
 **You never see your own committed entries.** The self-filter is unconditional. Entries where `agent === your-agent-id` are excluded regardless of topic, score, or any other factor. The reasoning: attune is for situational awareness, not a mirror.
 
-**You see your own drafts.** Draft entries you've created (status `"draft"`) are visible to you via attune. Other agents' drafts are never visible — they're in the drafts map, not the entries array. Drafts are treated like committed entries for scoring purposes.
+**You see your own drafts.** Draft entries you have created (status `"draft"`) are visible to you via attune. Other agents' drafts are never visible; they live in the drafts map, not the entries array. Drafts are treated like committed entries for scoring purposes, including `since_epoch` filtering.
 
 **Retracted and superseded entries are never visible.** Status filtering runs after the self-filter and before scoring. Only entries with `status === "committed"` from other agents, plus your own drafts, participate in scoring.
 
 **Supersession chains resolve automatically.** If entry X was superseded by entry Y, only Y appears in attune results. X is marked `"superseded"` and filtered out. The chain always presents the latest.
+
+**Confidence is visible but inert.** An entry's `confidence`, if the writer supplied one, is present on the returned object. It never contributes to `relevance_score` and never changes sort order. Confidence is an input to the reading agent's own decision, not to the protocol's ranking.
 
 ## Why intent travels with the entry
 
@@ -85,7 +130,7 @@ If the answer to "should I use `read` or `attune`" is "I'm not sure", you probab
 
 `attune` surfaces what's relevant. It does not comment on whether entries agree or disagree.
 
-When the calling agent's reasoning depends on knowing whether disagreement exists among the visible entries, use `reckon` instead. `reckon` returns the same scored, sorted entries as `attune` — plus a `conflicts` array describing pairs of entries that disagree on shared primitive keys.
+When the calling agent's reasoning depends on knowing whether disagreement exists among the visible entries, use `reckon` instead. `reckon` returns the same scored, sorted entries as `attune`, plus a `conflicts` array describing pairs of entries that disagree on shared primitive keys.
 
 See [RECKON.md](./RECKON.md) for the full conflict detection specification.
 

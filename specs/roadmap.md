@@ -2,7 +2,7 @@
 
 Where `@akashikprotocol/core` is going, mapped to the protocol's conformance levels.
 
-Status: Current as of v0.2.0 (June 2026).
+Status: Current as of v0.3.0 (August 2026).
 
 ---
 
@@ -20,7 +20,7 @@ Dates are not promised. The order is.
 
 Released 2026-05-03. The first public surface: `createField`, `write`, `read`, and a topic-filtered `attune` that excludes the caller's own writes. Mandatory intent was present from the first release.
 
-### v0.2 ~ full Level 0 plus selected Level 1 (current)
+### v0.2 ~ full Level 0 plus selected Level 1
 
 Released 2026-06-20. Full Level 0 conformance, plus four Level 1 operations that complete natural lifecycle stories.
 
@@ -31,20 +31,22 @@ Released 2026-06-20. Full Level 0 conformance, plus four Level 1 operations that
 - `reckon`: relevance ranking plus mechanical conflict detection.
 - Relevance scoring on `attune` across topic, role, recency, and intent quality.
 
-What v0.2 does not yet do is scoped to deeper levels: persistence, an event log, full Lamport clocks, confidence on records, polling, embeddings, and transport.
+What v0.2 did not yet do was scoped to deeper levels: persistence, an event log, full Lamport clocks, confidence on records, polling, embeddings, and transport.
+
+### v0.3 ~ full Level 1 (current)
+
+Released 2026-08-05. The release that completes Level 1. The in-memory reference became a durable, ordered, auditable store, and three storage backends now satisfy the same interface.
+
+- Persistent storage behind a `StorageAdapter` interface. `MemoryAdapter`, `FileAdapter`, and `PostgresAdapter` all pass the same conformance suite, proving the abstraction rather than asserting it.
+- An append-only event log, exposed through `replay()`, with supersession chain following that reconstructs the ordered sequence of intents behind the current state.
+- Full Lamport logical clocks, replacing the monotonic counter used in v0.2, correct under concurrent writers sharing one field.
+- Confidence on records: an optional `{ score, reason? }`, carried and surfaced, never used by the protocol to rank or resolve.
+- `since_epoch` polling on `attune`, for subscription by polling without a transport.
+- Real capability negotiation at registration: the field advertises the conformance levels and adapter-sourced flags it satisfies.
+
+What v0.3 does not yet do is scoped to deeper levels: semantic relevance, embeddings, automatic conflict resolution, subscription push, and transport bindings.
 
 ## Planned
-
-### v0.3 ~ full Level 1
-
-The release that completes Level 1. The work here turns the in-memory reference into a durable, ordered, auditable store.
-
-- Persistent storage behind an adapter, so a Field survives process restarts.
-- An append-only event log of every operation, and `REPLAY` to reconstruct reasoning chains from it.
-- Full Lamport logical clocks, replacing the monotonic counter used in v0.2.
-- Confidence on records: a score and the reasoning behind it.
-- `since_epoch` polling on `attune`, for subscription by polling.
-- Capability negotiation at registration, beyond the exchange placeholder of v0.2.
 
 ### v0.4 ~ Level 2
 
@@ -71,3 +73,5 @@ The first release with a frozen public API for its major version. Backward compa
 ## A note on scope
 
 Each release is scoped to what its level requires, not to everything that could be added while the code is open. A feature arriving ahead of its level is deferred by default. This is the discipline that keeps the levels honest and the contracts stable, and it is stated in full in [PRINCIPLES.md](../PRINCIPLES.md).
+
+v0.3 held to this discipline the same way v0.1 and v0.2 did. Three adapters, a full event log, real Lamport clocks, and capability negotiation shipped because Level 1 requires them. Semantic relevance, MERGE, and transport bindings did not ship, because they belong to levels v0.3 does not claim.

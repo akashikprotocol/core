@@ -41,7 +41,7 @@ async function main() {
   // 1. First field: write two entries, one with confidence, then close.
   console.log(`\n— field 1 — writing to field_id "${fieldId}" —`);
   const adapter1 = createPostgresAdapter({ connectionString, fieldId });
-  await adapter1.init();
+  await adapter1.init?.();
   const field1 = createField({ adapter: adapter1 });
 
   await field1.write({
@@ -58,7 +58,7 @@ async function main() {
   });
   console.log("  wrote 2 entries");
 
-  await adapter1.close();
+  await adapter1.close?.();
   console.log("  closed field 1's connection");
 
   // 2. Second field: fresh Field instance, fresh connection pool, same
@@ -84,7 +84,7 @@ async function main() {
     }
   }
 
-  await adapter2.close();
+  await adapter2.close?.();
   console.log("\nPersistence confirmed: field 2 never shared memory with field 1,");
   console.log(`only the database. Rows remain under field_id "${fieldId}" for inspection.`);
 }

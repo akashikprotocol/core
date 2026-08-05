@@ -8,6 +8,7 @@ describe("public exports — runtime", () => {
       "AkashikError",
       "EVENT_FORMAT_VERSION",
       "FIELD_PROTOCOL_LEVELS",
+      "buildProjection",
       "createField",
       "createMemoryAdapter",
     ]);
@@ -19,6 +20,10 @@ describe("public exports — runtime", () => {
 
   it("createMemoryAdapter is a function", () => {
     expect(typeof akashik.createMemoryAdapter).toBe("function");
+  });
+
+  it("buildProjection is a function", () => {
+    expect(typeof akashik.buildProjection).toBe("function");
   });
 
   it("EVENT_FORMAT_VERSION is 1", () => {
@@ -40,7 +45,7 @@ describe("public exports — runtime", () => {
     expect(err).toBeInstanceOf(akashik.AkashikError);
   });
 
-  it("createField() returns a Field with all v0.2 methods", () => {
+  it("createField() returns a Field with all v0.3 methods", () => {
     const field = akashik.createField();
     const expectedMethods = [
       "write",
@@ -54,6 +59,7 @@ describe("public exports — runtime", () => {
       "retract",
       "supersede",
       "reckon",
+      "replay",
     ];
     for (const method of expectedMethods) {
       expect(
@@ -63,7 +69,7 @@ describe("public exports — runtime", () => {
     }
   });
 
-  it("AkashikError accepts all 9 v0.2 error codes", () => {
+  it("AkashikError accepts all 11 v0.3 error codes", () => {
     const codes = [
       "INTENT_REQUIRED",
       "INTENT_TOO_SHORT",
@@ -74,11 +80,41 @@ describe("public exports — runtime", () => {
       "DRAFT_NOT_FOUND",
       "RETRACT_NOT_AUTHORIZED",
       "ENTRY_NOT_FOUND",
+      "INVALID_CONFIDENCE",
+      "STORAGE_ERROR",
     ] as const;
     for (const code of codes) {
       const err = new akashik.AkashikError(code, "test");
       expect(err.code).toBe(code);
     }
+  });
+
+  it("buildProjection composes with replay() for state at a point", async () => {
+    const field = akashik.createField();
+    await field.write({ entry: { topic: "x" }, intent: "checking buildProjection composes" });
+    const events = await field.replay();
+    const projection = akashik.buildProjection(events);
+    expect(projection.entries.size).toBe(1);
+  });
+});
+
+describe("public exports — subpaths", () => {
+  it("@akashikprotocol/core/postgres exposes createPostgresAdapter", async () => {
+    const postgresModule = await import("../src/postgres.js");
+    expect(typeof postgresModule.createPostgresAdapter).toBe("function");
+  });
+
+  it("@akashikprotocol/core/file exposes createFileAdapter", async () => {
+    const fileModule = await import("../src/file.js");
+    expect(typeof fileModule.createFileAdapter).toBe("function");
+  });
+
+  it("createPostgresAdapter is not reachable from the root entry point", () => {
+    expect("createPostgresAdapter" in akashik).toBe(false);
+  });
+
+  it("createFileAdapter is not reachable from the root entry point", () => {
+    expect("createFileAdapter" in akashik).toBe(false);
   });
 });
 
@@ -89,6 +125,7 @@ describe("public exports — type surface (compile-time check)", () => {
       attuneContext: import("../src/index.js").AttuneContext;
       commitInput: import("../src/index.js").CommitInput;
       commitResult: import("../src/index.js").CommitResult;
+      confidence: import("../src/index.js").Confidence;
       conflict: import("../src/index.js").Conflict;
       deregisterEvent: import("../src/index.js").DeregisterEvent;
       discardInput: import("../src/index.js").DiscardInput;
@@ -101,6 +138,7 @@ describe("public exports — type surface (compile-time check)", () => {
       fieldEvent: import("../src/index.js").FieldEvent;
       fieldOptions: import("../src/index.js").FieldOptions;
       projection: import("../src/index.js").Projection;
+      protocolLevel: import("../src/index.js").ProtocolLevel;
       readOptions: import("../src/index.js").ReadOptions;
       readQuery: import("../src/index.js").ReadQuery;
       reckonResult: import("../src/index.js").ReckonResult;
@@ -109,6 +147,7 @@ describe("public exports — type surface (compile-time check)", () => {
       registerInput: import("../src/index.js").RegisterInput;
       registerResult: import("../src/index.js").RegisterResult;
       relevanceReason: import("../src/index.js").RelevanceReason;
+      replayQuery: import("../src/index.js").ReplayQuery;
       retractInput: import("../src/index.js").RetractInput;
       statusChangeEvent: import("../src/index.js").StatusChangeEvent;
       storageAdapter: import("../src/index.js").StorageAdapter;
@@ -122,7 +161,7 @@ describe("public exports — type surface (compile-time check)", () => {
     expect(_check).toBeUndefined();
   });
 
-  it("Field type has all 11 v0.2 methods declared", () => {
+  it("Field type has all 12 v0.3 methods declared", () => {
     type FieldMethods = keyof import("../src/index.js").Field;
     const expectedMethods: FieldMethods[] = [
       "write",
@@ -136,7 +175,20 @@ describe("public exports — type surface (compile-time check)", () => {
       "retract",
       "supersede",
       "reckon",
+      "replay",
     ];
-    expect(expectedMethods).toHaveLength(11);
+    expect(expectedMethods).toHaveLength(12);
+  });
+
+  it("PostgresAdapterOptions is reachable from the postgres subpath", () => {
+    type Check = import("../src/postgres.js").PostgresAdapterOptions;
+    const _check: Check | undefined = undefined;
+    expect(_check).toBeUndefined();
+  });
+
+  it("FileAdapterOptions is reachable from the file subpath", () => {
+    type Check = import("../src/file.js").FileAdapterOptions;
+    const _check: Check | undefined = undefined;
+    expect(_check).toBeUndefined();
   });
 });
